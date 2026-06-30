@@ -12,7 +12,5 @@ services:
         sync: false
       - key: OWNER_IDS
         sync: false
-      - key: WEBHOOK_URL
+      - key: API_TOKEN
         sync: false
-      - key: PORT
-        value: 8000
