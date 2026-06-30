@@ -133,7 +133,7 @@ web_app = FastAPI(lifespan=lifespan, title="Group Management Bot")
 web_app.include_router(api_router)
 
 
-@web_app.get("/")
+@web_app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "status": "running",
@@ -145,9 +145,9 @@ async def root():
     }
 
 
-@web_app.get("/ping")
+@web_app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    """Uptime Robot health check — always 200 while process is alive."""
+    """Uptime Robot health check — always 200. Accepts both GET and HEAD requests."""
     return Response(content="pong", media_type="text/plain", status_code=200)
 
 
