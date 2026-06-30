@@ -10,6 +10,7 @@ import uvicorn
 
 from database.connection import connect_db, disconnect_db
 from bot.handlers import moderation, system, broadcast
+from api.routes import router as api_router
 
 load_dotenv()
 
@@ -17,9 +18,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN secret is missing.")
 
-# WEBHOOK_URL: set as env var in Railway dashboard
-# e.g. https://your-service.up.railway.app/webhook
+# Auto-detect webhook URL from Render environment if not explicitly set
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+if not WEBHOOK_URL:
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+    if render_url:
+        WEBHOOK_URL = f"{render_url}/webhook"
+
 USE_WEBHOOK = bool(WEBHOOK_URL)
 
 ptb_app: Application = None
@@ -63,11 +68,12 @@ async def lifespan(app: FastAPI):
             drop_pending_updates=True,
         )
         me = await ptb_app.bot.get_me()
-        print(f"✅ Webhook: {WEBHOOK_URL}")
+        print(f"✅ Webhook set: {WEBHOOK_URL}")
         print(f"✅ Bot running as @{me.username}")
     else:
         me = await ptb_app.bot.get_me()
-        print(f"✅ Bot running as @{me.username} (polling mode)")
+        print(f"✅ Bot running as @{me.username} (no webhook — updates via polling only)")
+        print("⚠️  Set WEBHOOK_URL env var for webhook mode on Render.")
 
     print("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ — ready!")
 
@@ -86,10 +92,19 @@ async def lifespan(app: FastAPI):
 
 web_app = FastAPI(lifespan=lifespan, title="Group Management Bot")
 
+# Mount REST API routes
+web_app.include_router(api_router)
+
 
 @web_app.get("/")
 async def health_check():
-    return {"status": "✅ running", "message": "ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ"}
+    return {"status": "ok", "bot": "running", "webhook": USE_WEBHOOK}
+
+
+@web_app.get("/ping")
+async def ping():
+    """Uptime Robot ping endpoint — always returns 200 OK."""
+    return "pong"
 
 
 @web_app.post("/webhook")
