@@ -7,7 +7,35 @@ from database.connection import get_db
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ")
+    user = update.effective_user
+    name = user.first_name or "Admin"
+    text = (
+        f"👋 *Hello, {name}!*\n"
+        f"I'm a *Group Management Bot* — add me to your group and make me admin.\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🛡️ *Moderation*\n"
+        f"`/kick` — Kick a user\n"
+        f"`/ban` — Ban a user\n"
+        f"`/unban` — Unban a user\n"
+        f"`/mute [sec]` — Mute a user\n"
+        f"`/unmute` — Unmute a user\n\n"
+        f"⚠️ *Warnings*\n"
+        f"`/warn [reason]` — Warn a user\n"
+        f"`/unwarn` — Remove last warning\n"
+        f"`/warnings` — Show warning list\n"
+        f"`/setwarnlimit [n]` — Set auto-ban limit\n\n"
+        f"⚙️ *Group Settings* _(admin only)_\n"
+        f"`/setwelcome` — Set welcome message\n"
+        f"`/setgoodbye` — Set goodbye message\n"
+        f"`/setrules` — Set group rules\n"
+        f"`/rules` — Show group rules\n\n"
+        f"📡 *Broadcast* _(owner only)_\n"
+        f"`/broadcast all <text>`\n"
+        f"`/broadcast <group_id> <text>`\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🏓 `/ping` — Check bot status"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
