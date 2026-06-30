@@ -1,14 +1,25 @@
 from datetime import datetime, timezone
-from telegram import Update, ChatMember, ChatPermissions
+from telegram import Update, ChatMember, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, ChatMemberHandler, ContextTypes
 
 from bot.utils import sc, is_admin, is_owner, check_cooldown, log_action
 from database.connection import get_db
 
 
+def _group_only_keyboard(bot_username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            sc("Add me to a group") + " ➕",
+            url=f"https://t.me/{bot_username}?startgroup=true"
+        )
+    ]])
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = sc(user.first_name or "Admin")
+    bot_username = context.bot.username
+
     text = (
         f"👋 *{sc('Hello')}, {name}!*\n"
         f"{sc('I am a Group Management Bot — add me to your group and make me admin.')}\n\n"
@@ -24,18 +35,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"`/unwarn` — {sc('Remove last warning')}\n"
         f"`/warnings` — {sc('Show warning list')}\n"
         f"`/setwarnlimit [n]` — {sc('Set auto-ban limit')}\n\n"
+        f"🔒 *{sc('Group Controls')}* _{sc('admin only')}_\n"
+        f"`/lock` — {sc('Lock chat (mute all members)')}\n"
+        f"`/unlock` — {sc('Unlock chat')}\n"
+        f"`/pin` — {sc('Pin replied message')}\n"
+        f"`/unpin` — {sc('Unpin message')}\n"
+        f"`/promote` — {sc('Promote user to admin')}\n"
+        f"`/demote` — {sc('Demote user from admin')}\n"
+        f"`/purge [n]` — {sc('Delete last N messages')}\n"
+        f"`/info` — {sc('Get user information')}\n"
+        f"`/report` — {sc('Report user to admins')}\n\n"
         f"⚙️ *{sc('Group Settings')}* _{sc('admin only')}_\n"
         f"`/setwelcome` — {sc('Set welcome message')}\n"
         f"`/setgoodbye` — {sc('Set goodbye message')}\n"
         f"`/setrules` — {sc('Set group rules')}\n"
         f"`/rules` — {sc('Show group rules')}\n\n"
+        f"📤 *{sc('Post to Group from PM')}*\n"
+        f"`/post <text>` — {sc('Send a message to your group via PM')}\n\n"
         f"📡 *{sc('Broadcast')}* _{sc('owner only')}_\n"
         f"`/broadcast all <text>`\n"
         f"`/broadcast <group_id> <text>`\n\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"🏓 `/ping` — {sc('Check bot status')}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                sc("Add me to group") + " ➕",
+                url=f"https://t.me/{bot_username}?startgroup=true"
+            ),
+            InlineKeyboardButton(
+                sc("Share bot") + " 📤",
+                url=f"https://t.me/share/url?url=https://t.me/{bot_username}&text=Great+group+management+bot!"
+            ),
+        ]
+    ])
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,6 +79,11 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command in your group."),
+            reply_markup=_group_only_keyboard(context.bot.username)
+        )
     if not check_cooldown(update.effective_user.id, "rules"):
         return await update.message.reply_text(sc("Please wait before using this command again."))
     db = get_db()
@@ -53,6 +94,11 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command in your group."),
+            reply_markup=_group_only_keyboard(context.bot.username)
+        )
     uid = update.effective_user.id
     cid = update.effective_chat.id
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
@@ -74,6 +120,11 @@ async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command in your group."),
+            reply_markup=_group_only_keyboard(context.bot.username)
+        )
     uid = update.effective_user.id
     cid = update.effective_chat.id
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
@@ -98,6 +149,11 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command in your group."),
+            reply_markup=_group_only_keyboard(context.bot.username)
+        )
     uid = update.effective_user.id
     cid = update.effective_chat.id
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
@@ -119,6 +175,11 @@ async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def setwarnlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command in your group."),
+            reply_markup=_group_only_keyboard(context.bot.username)
+        )
     uid = update.effective_user.id
     cid = update.effective_chat.id
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
@@ -127,7 +188,8 @@ async def setwarnlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(sc("Usage: /setwarnlimit [number]"))
     try:
         limit = int(context.args[0])
-        if limit < 1: raise ValueError
+        if limit < 1:
+            raise ValueError
     except ValueError:
         return await update.message.reply_text(sc("Please provide a valid number (minimum 1)."))
     db = get_db()
