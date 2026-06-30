@@ -1,185 +1,172 @@
 from datetime import datetime, timezone
-from pyrogram import Client, filters
-from pyrogram.enums import ChatMemberStatus
-from pyrogram.types import Message, ChatMemberUpdated
+from telegram import Update, ChatMember, ChatPermissions
+from telegram.ext import Application, CommandHandler, ChatMemberHandler, ContextTypes
 
-from bot.client import bot
-from bot.utils import is_admin, is_owner, check_cooldown, log_action
+from bot.utils import sc, is_admin, is_owner, check_cooldown, log_action
 from database.connection import get_db
 
-SMALL_CAPS = str.maketrans(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"
-)
 
-def sc(text: str) -> str:
-    return text.translate(SMALL_CAPS)
-
-START_TEXT = "ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ")
 
 
-@bot.on_message(filters.command("start"))
-async def start(client: Client, message: Message):
-    await message.reply(START_TEXT)
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ᴘᴏɴɢ! 🏓")
 
 
-@bot.on_message(filters.command("ping"))
-async def ping(client: Client, message: Message):
-    await message.reply("ᴘᴏɴɢ! 🏓")
-
-
-@bot.on_message(filters.command("rules") & filters.group)
-async def rules(client: Client, message: Message):
-    if not await check_cooldown(message.from_user.id, "rules"):
-        return await message.reply(sc("Please wait before using this command again."))
+async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not check_cooldown(update.effective_user.id, "rules"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
     db = get_db()
-    config = await db.group_configs.find_one({"group_id": message.chat.id})
+    config = await db.group_configs.find_one({"group_id": update.effective_chat.id})
     if not config or not config.get("rules"):
-        return await message.reply(sc("No rules set for this group."))
-    await message.reply(f"📜 **{sc('Rules')}**\n\n{config['rules']}")
+        return await update.message.reply_text(sc("No rules set for this group."))
+    await update.message.reply_text(f"📜 *{sc('Rules')}*\n\n{config['rules']}", parse_mode="Markdown")
 
 
-@bot.on_message(filters.command("setrules") & filters.group)
-async def set_rules(client: Client, message: Message):
-    if not await is_admin(client, message.chat.id, message.from_user.id) and not await is_owner(message):
-        return await message.reply(sc("You need to be an admin to use this command."))
-    if not await check_cooldown(message.from_user.id, "setrules"):
-        return await message.reply(sc("Please wait before using this command again."))
-    if len(message.command) < 2:
-        return await message.reply(sc("Please provide the rules text."))
-
-    rules_text = " ".join(message.command[1:])
+async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(sc("You need to be an admin to use this command."))
+    if not check_cooldown(uid, "setrules"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
+    if not context.args:
+        return await update.message.reply_text(sc("Please provide the rules text."))
+    rules_text = " ".join(context.args)
     db = get_db()
     await db.group_configs.update_one(
-        {"group_id": message.chat.id},
+        {"group_id": cid},
         {"$set": {"rules": rules_text, "updated_at": datetime.now(timezone.utc)},
-         "$setOnInsert": {"group_id": message.chat.id, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
+         "$setOnInsert": {"group_id": cid, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
         upsert=True
     )
-    await log_action(client, message.chat.id, message.from_user.id, message.from_user.id, "set rules")
-    await message.reply(sc("Rules set successfully."))
+    await log_action(context.bot, cid, uid, uid, "set rules")
+    await update.message.reply_text(sc("Rules set successfully."))
 
 
-@bot.on_message(filters.command("setwelcome") & filters.group)
-async def set_welcome(client: Client, message: Message):
-    if not await is_admin(client, message.chat.id, message.from_user.id) and not await is_owner(message):
-        return await message.reply(sc("You need to be an admin to use this command."))
-    if not await check_cooldown(message.from_user.id, "setwelcome"):
-        return await message.reply(sc("Please wait before using this command again."))
-    if len(message.command) < 2:
-        return await message.reply(
-            sc("Please provide a welcome message. Placeholders:") +
-            "\n{user} {first_name} {last_name} {username} {group}"
+async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(sc("You need to be an admin to use this command."))
+    if not check_cooldown(uid, "setwelcome"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
+    if not context.args:
+        return await update.message.reply_text(
+            sc("Usage: /setwelcome your message here\n"
+               "Placeholders: {user} {first_name} {last_name} {username} {group}")
         )
-
-    welcome = " ".join(message.command[1:])
+    msg = " ".join(context.args)
     db = get_db()
     await db.group_configs.update_one(
-        {"group_id": message.chat.id},
-        {"$set": {"welcome_message": welcome, "updated_at": datetime.now(timezone.utc)},
-         "$setOnInsert": {"group_id": message.chat.id, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
+        {"group_id": cid},
+        {"$set": {"welcome_message": msg, "updated_at": datetime.now(timezone.utc)},
+         "$setOnInsert": {"group_id": cid, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
         upsert=True
     )
-    await log_action(client, message.chat.id, message.from_user.id, message.from_user.id, "set welcome message")
-    await message.reply(sc("Welcome message set successfully."))
+    await log_action(context.bot, cid, uid, uid, "set welcome message")
+    await update.message.reply_text(sc("Welcome message set successfully."))
 
 
-@bot.on_message(filters.command("setgoodbye") & filters.group)
-async def set_goodbye(client: Client, message: Message):
-    if not await is_admin(client, message.chat.id, message.from_user.id) and not await is_owner(message):
-        return await message.reply(sc("You need to be an admin to use this command."))
-    if not await check_cooldown(message.from_user.id, "setgoodbye"):
-        return await message.reply(sc("Please wait before using this command again."))
-    if len(message.command) < 2:
-        return await message.reply(
-            sc("Please provide a goodbye message. Placeholders:") +
-            "\n{user} {first_name} {last_name} {username} {group}"
-        )
-
-    goodbye = " ".join(message.command[1:])
+async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(sc("You need to be an admin to use this command."))
+    if not check_cooldown(uid, "setgoodbye"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
+    if not context.args:
+        return await update.message.reply_text(sc("Usage: /setgoodbye your message here"))
+    msg = " ".join(context.args)
     db = get_db()
     await db.group_configs.update_one(
-        {"group_id": message.chat.id},
-        {"$set": {"goodbye_message": goodbye, "updated_at": datetime.now(timezone.utc)},
-         "$setOnInsert": {"group_id": message.chat.id, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
+        {"group_id": cid},
+        {"$set": {"goodbye_message": msg, "updated_at": datetime.now(timezone.utc)},
+         "$setOnInsert": {"group_id": cid, "warn_limit": 3, "created_at": datetime.now(timezone.utc)}},
         upsert=True
     )
-    await log_action(client, message.chat.id, message.from_user.id, message.from_user.id, "set goodbye message")
-    await message.reply(sc("Goodbye message set successfully."))
+    await log_action(context.bot, cid, uid, uid, "set goodbye message")
+    await update.message.reply_text(sc("Goodbye message set successfully."))
 
 
-@bot.on_message(filters.command("setwarnlimit") & filters.group)
-async def set_warn_limit(client: Client, message: Message):
-    if not await is_admin(client, message.chat.id, message.from_user.id) and not await is_owner(message):
-        return await message.reply(sc("You need to be an admin to use this command."))
-    if not await check_cooldown(message.from_user.id, "setwarnlimit"):
-        return await message.reply(sc("Please wait before using this command again."))
-    if len(message.command) < 2:
-        return await message.reply(sc("Usage: /setwarnlimit [number]"))
-
+async def setwarnlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(sc("You need to be an admin to use this command."))
+    if not context.args:
+        return await update.message.reply_text(sc("Usage: /setwarnlimit [number]"))
     try:
-        limit = int(message.command[1])
-        if limit < 1:
-            raise ValueError
+        limit = int(context.args[0])
+        if limit < 1: raise ValueError
     except ValueError:
-        return await message.reply(sc("Please provide a valid number (minimum 1)."))
-
+        return await update.message.reply_text(sc("Please provide a valid number (minimum 1)."))
     db = get_db()
     await db.group_configs.update_one(
-        {"group_id": message.chat.id},
+        {"group_id": cid},
         {"$set": {"warn_limit": limit, "updated_at": datetime.now(timezone.utc)},
-         "$setOnInsert": {"group_id": message.chat.id, "created_at": datetime.now(timezone.utc)}},
+         "$setOnInsert": {"group_id": cid, "created_at": datetime.now(timezone.utc)}},
         upsert=True
     )
-    await log_action(client, message.chat.id, message.from_user.id, message.from_user.id, f"set warn limit to {limit}")
-    await message.reply(sc(f"Warn limit set to {limit}."))
+    await log_action(context.bot, cid, uid, uid, f"set warn limit to {limit}")
+    await update.message.reply_text(sc(f"Warn limit set to {limit}."))
 
 
-@bot.on_chat_member_updated()
-async def handle_member_update(client: Client, chat_member: ChatMemberUpdated):
-    if not chat_member.chat.type.name.upper().startswith(("SUPER", "GROUP")):
+async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    if not result:
         return
+    old_status = result.old_chat_member.status
+    new_status = result.new_chat_member.status
 
-    old = chat_member.old_chat_member.status if chat_member.old_chat_member else None
-    new = chat_member.new_chat_member.status if chat_member.new_chat_member else None
-
-    joined = (old in (None, ChatMemberStatus.LEFT, ChatMemberStatus.BANNED)) and \
-              (new in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER))
-    left = (old in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)) and \
-           (new in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED))
+    joined = old_status in (ChatMember.LEFT, ChatMember.BANNED) and \
+             new_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER)
+    left = old_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER) and \
+           new_status in (ChatMember.LEFT, ChatMember.BANNED)
 
     db = get_db()
-    config = await db.group_configs.find_one({"group_id": chat_member.chat.id})
+    config = await db.group_configs.find_one({"group_id": result.chat.id})
 
-    def fmt(template, user):
+    def fmt(template: str, user) -> str:
         return template.format(
-            user=user.mention,
+            user=f"@{user.username}" if user.username else user.first_name,
             first_name=user.first_name,
             last_name=user.last_name or "",
             username=f"@{user.username}" if user.username else "",
-            group=chat_member.chat.title,
+            group=result.chat.title,
         )
 
     try:
         if joined:
-            user = chat_member.new_chat_member.user
+            user = result.new_chat_member.user
             msg = fmt(
-                (config.get("welcome_message") if config and config.get("welcome_message")
-                 else "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!"),
+                config.get("welcome_message", "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!") if config else
+                "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!",
                 user
             )
-            await client.send_message(chat_member.chat.id, msg)
-            await log_action(client, chat_member.chat.id, user.id, 0, "joined the group")
-
+            await context.bot.send_message(result.chat.id, msg)
+            await log_action(context.bot, result.chat.id, user.id, 0, "joined the group")
         elif left:
-            user = chat_member.old_chat_member.user
-            action = "was banned" if new == ChatMemberStatus.BANNED else "left the group"
+            user = result.old_chat_member.user
+            action = "was banned" if new_status == ChatMember.BANNED else "left the group"
             msg = fmt(
-                (config.get("goodbye_message") if config and config.get("goodbye_message")
-                 else "ɢᴏᴏᴅʙʏᴇ, {user}!"),
+                config.get("goodbye_message", "ɢᴏᴏᴅʙʏᴇ, {user}!") if config else
+                "ɢᴏᴏᴅʙʏᴇ, {user}!",
                 user
             )
-            await client.send_message(chat_member.chat.id, msg)
-            await log_action(client, chat_member.chat.id, user.id, 0, action)
+            await context.bot.send_message(result.chat.id, msg)
+            await log_action(context.bot, result.chat.id, user.id, 0, action)
     except Exception as e:
         print(f"Member update error: {e}")
+
+
+def register(app: Application):
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping))
+    app.add_handler(CommandHandler("rules", rules))
+    app.add_handler(CommandHandler("setrules", setrules))
+    app.add_handler(CommandHandler("setwelcome", setwelcome))
+    app.add_handler(CommandHandler("setgoodbye", setgoodbye))
+    app.add_handler(CommandHandler("setwarnlimit", setwarnlimit))
+    app.add_handler(ChatMemberHandler(handle_member_update, ChatMemberHandler.CHAT_MEMBER))
