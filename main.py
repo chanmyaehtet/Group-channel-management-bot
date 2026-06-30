@@ -9,7 +9,7 @@ from telegram.request import HTTPXRequest
 import uvicorn
 
 from database.connection import connect_db, disconnect_db
-from bot.handlers import moderation, system, broadcast
+from bot.handlers import moderation, system, broadcast, controls, posttogroup
 from api.routes import router as api_router
 
 load_dotenv()
@@ -80,6 +80,8 @@ async def init_bot_and_db():
         moderation.register(ptb_app)
         system.register(ptb_app)
         broadcast.register(ptb_app)
+        controls.register(ptb_app)
+        posttogroup.register(ptb_app)
 
         await ptb_app.initialize()
         await ptb_app.start()
