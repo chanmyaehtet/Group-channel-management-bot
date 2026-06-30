@@ -1,29 +1,34 @@
 import os
 import asyncio
-from contextlib import asynccontextmanager
+import importlib
 
-from fastapi import FastAPI
+from pyrogram import idle
 from dotenv import load_dotenv
 
-from bot.client import start_bot, bot
-from api.routes import router as api_router
-from database.connection import disconnect_db
+from bot.client import bot
+from database.connection import connect_db, disconnect_db
 
 load_dotenv()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await start_bot()
-    yield
+async def main():
+    await connect_db()
+
+    # Register all handlers
+    importlib.import_module("bot.handlers.moderation")
+    importlib.import_module("bot.handlers.system")
+
+    await bot.start()
+    me = await bot.get_me()
+    print(f"✅ Bot started as @{me.username}")
+    print("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ — bot is running...")
+
+    await idle()  # Keep bot alive until interrupted
+
     await bot.stop()
     await disconnect_db()
+    print("Bot stopped.")
 
 
-app = FastAPI(title="GCM Bot API", lifespan=lifespan)
-app.include_router(api_router)
-
-
-@app.get("/")
-async def root():
-    return {"status": "running", "message": "ɢᴄᴍ ʙᴏᴛ ɪs ᴀᴄᴛɪᴠᴇ 🤖"}
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,12 +1,19 @@
+# Hugging Face Spaces — Docker Blank
 FROM python:3.11-slim
+
+# HF Spaces runs as non-root user
+RUN useradd -m -u 1000 botuser
 
 WORKDIR /app
 
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy source code
+COPY --chown=botuser:botuser . .
 
-EXPOSE 8000
+USER botuser
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# No port needed — pure Telegram bot (long-polling)
+CMD ["python", "main.py"]
