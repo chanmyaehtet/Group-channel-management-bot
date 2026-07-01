@@ -41,7 +41,7 @@ async def get_logs(
     if admin_id: query["admin_id"] = admin_id
     if action: query["action"] = {"$regex": action, "$options": "i"}
 
-    cursor = db.moderation_logs.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit)
+    cursor = db.logs.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit)
     logs = await cursor.to_list(length=limit)
     for log in logs:
         if isinstance(log.get("created_at"), datetime):
@@ -72,10 +72,10 @@ async def get_groups(
     token: str = Security(verify_token),
 ):
     db = get_db()
-    cursor = db.group_configs.find({}, {"_id": 0}).skip(skip).limit(limit)
+    cursor = db.groups.find({}, {"_id": 0}).skip(skip).limit(limit)
     groups = await cursor.to_list(length=limit)
     for g in groups:
-        for key in ("created_at", "updated_at"):
+        for key in ("created_at", "updated_at", "added_at", "last_activity"):
             if isinstance(g.get(key), datetime):
                 g[key] = g[key].isoformat()
     return groups
@@ -84,22 +84,19 @@ async def get_groups(
 @router.get("/stats")
 async def get_stats(token: str = Security(verify_token)):
     db = get_db()
-    total_groups = await db.group_configs.count_documents({})
+    total_groups = await db.groups.count_documents({})
     total_warnings = await db.warnings.count_documents({})
-    total_actions = await db.moderation_logs.count_documents({})
+    total_actions = await db.logs.count_documents({})
 
-    # Unique users
-    unique_users = await db.moderation_logs.distinct("user_id")
+    unique_users = await db.logs.distinct("user_id")
     total_users = len(unique_users)
 
-    # Actions by type (aggregate)
     pipeline_actions = [{"$group": {"_id": "$action", "count": {"$sum": 1}}}]
     actions_by_type = {
         doc["_id"]: doc["count"]
-        async for doc in db.moderation_logs.aggregate(pipeline_actions)
+        async for doc in db.logs.aggregate(pipeline_actions)
     }
 
-    # Most active groups
     pipeline_groups = [
         {"$group": {"_id": "$group_id", "action_count": {"$sum": 1}}},
         {"$sort": {"action_count": -1}},
@@ -107,10 +104,9 @@ async def get_stats(token: str = Security(verify_token)):
     ]
     most_active_groups = [
         {"group_id": doc["_id"], "action_count": doc["action_count"]}
-        async for doc in db.moderation_logs.aggregate(pipeline_groups)
+        async for doc in db.logs.aggregate(pipeline_groups)
     ]
 
-    # Most warned users
     pipeline_warned = [
         {"$group": {"_id": "$user_id", "warning_count": {"$sum": 1}}},
         {"$sort": {"warning_count": -1}},
