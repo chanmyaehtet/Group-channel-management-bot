@@ -1,14 +1,51 @@
+"""
+/post — Multi-step post creation wizard (private chat, owner-only).
+
+Flow:
+  /post
+    └── TYPING_MESSAGE   ← user types the post text
+        └── CONFIRM_MESSAGE  ← ✅ Confirm / ❌ Cancel
+            └── BUTTON_CHOICE  ← ➕ Add Button / ⏭️ Skip
+                │
+                ├── Skip ──────────────────────────────┐
+                └── ➕ Add Button                       │
+                    └── BUTTON_1_NAME                   │
+                        └── BUTTON_1_URL                │
+                            └── BUTTON_2_CHOICE         │
+                                │                       │
+                                ├── Skip ───────────────┤
+                                └── ➕ Add 2nd Button   │
+                                    └── BUTTON_2_NAME   │
+                                        └── BUTTON_2_URL│
+                                                        ▼
+                                               SELECT_GROUP
+                                                   └── FINAL_CONFIRM
+                                                       └── ✅ Send → END
+
+• /cancel ends conversation at any step
+• 5 minutes of inactivity → auto-cancel
+• Sent posts are persisted to the `posts` MongoDB collection
+"""
+
 from datetime import datetime, timezone
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters,
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 from telegram.error import TelegramError
 
-from bot.utils import sc, is_owner, is_admin
+from bot.utils import sc, is_owner
 from database.connection import get_db
+from database.models import get_all_groups
 
+# ── State constants ────────────────────────────────────────────────────────────
 (
     TYPING_MESSAGE,
     CONFIRM_MESSAGE,
@@ -25,11 +62,84 @@ from database.connection import get_db
 TIMEOUT = 300  # 5 minutes
 
 
+# ── Internal helpers ───────────────────────────────────────────────────────────
+
+def _normalise_url(raw: str) -> str:
+    """Turn @username or bare domain into a full https URL."""
+    raw = raw.strip()
+    if raw.startswith("@"):
+        return f"https://t.me/{raw[1:]}"
+    if not raw.startswith(("http://", "https://")):
+        return f"https://{raw}"
+    return raw
+
+
+async def _nudge(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remind the user to tap a button instead of typing."""
+    await update.message.reply_text(
+        "👆 " + sc("Please use the buttons above, or send /cancel to exit.")
+    )
+
+
+async def _show_group_select(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Render the group-selection keyboard.
+
+    Works whether called from a MessageHandler (update.message) or a
+    CallbackQueryHandler (update.callback_query).
+
+    Returns SELECT_GROUP or ConversationHandler.END.
+    """
+    groups = await get_all_groups()   # [{group_id, title}, …] from db.groups
+
+    if not groups:
+        text = (
+            f"❌ *{sc('No groups found')}*\n\n"
+            f"{sc('Add me to a group and interact there first, then try /post again.')}"
+        )
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(text, parse_mode="Markdown")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    rows = [
+        [InlineKeyboardButton(
+            sc((g.get("title") or str(g["group_id"]))[:35]),
+            callback_data=f"post_grp:{g['group_id']}"
+        )]
+        for g in groups
+    ]
+    rows.append([InlineKeyboardButton("❌ " + sc("Cancel"), callback_data="post_cancel_grp")])
+    keyboard = InlineKeyboardMarkup(rows)
+    text = f"📍 *{sc('Select group to post to')}:*"
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=keyboard
+        )
+    else:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+    return SELECT_GROUP
+
+
+# ── Step 1: Entry (/post) ──────────────────────────────────────────────────────
+
 async def post_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cid = update.effective_chat.id
-    if not is_owner(uid) and not await is_admin(context.bot, cid, uid):
-        await update.message.reply_text(sc("This command is only for admins and owners."))
+    """Entry point — private chat, owner-only."""
+    if update.effective_chat.type != "private":
+        await update.message.reply_text(
+            sc("Use /post in PM (private chat with the bot).")
+        )
+        return ConversationHandler.END
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text(
+            sc("This command is for bot owners only.")
+        )
         return ConversationHandler.END
 
     context.user_data.clear()
@@ -42,21 +152,24 @@ async def post_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TYPING_MESSAGE
 
 
+# ── Step 2: Receive post text ──────────────────────────────────────────────────
+
 async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["message"] = update.message.text
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirm", callback_data="post_confirm"),
-            InlineKeyboardButton("❌ Cancel", callback_data="post_cancel"),
-        ]
-    ])
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ " + sc("Confirm"), callback_data="post_confirm"),
+        InlineKeyboardButton("❌ " + sc("Cancel"),  callback_data="post_cancel"),
+    ]])
     await update.message.reply_text(
-        f"📋 *{sc('Post Preview')}*:\n\n{update.message.text}",
+        f"📋 *{sc('Post Preview')}:*\n\n{update.message.text}",
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
     return CONFIRM_MESSAGE
 
+
+# ── Step 3: Confirm text → ask about buttons ───────────────────────────────────
 
 async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -67,15 +180,13 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return ConversationHandler.END
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ Add Button", callback_data="add_btn"),
-            InlineKeyboardButton("⏭️ Skip", callback_data="skip_btn"),
-        ]
-    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("➕ " + sc("Add Button"), callback_data="add_btn"),
+        InlineKeyboardButton("⏭️ " + sc("Skip"),       callback_data="skip_btn"),
+    ]])
     await query.edit_message_text(
-        f"🔘 *{sc('Add Buttons')}?*\n\n"
-        f"{sc('You can add up to 2 buttons below your post.')}\n"
+        f"🔘 *{sc('Add Buttons?')}*\n\n"
+        f"{sc('You can attach up to 2 buttons to your post.')}\n"
         f"{sc('Each button needs a label and a URL or @username.')}",
         reply_markup=keyboard,
         parse_mode="Markdown",
@@ -83,14 +194,15 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BUTTON_CHOICE
 
 
+# ── Step 4a: Button 1 — name ───────────────────────────────────────────────────
+
 async def button_choice_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "skip_btn":
         context.user_data["buttons"] = []
-        await query.edit_message_text(f"⏭️ {sc('No buttons. Selecting group...')}")
-        return await _show_group_selection(query.message, context, edit=True)
+        return await _show_group_select(update, context)
 
     await query.edit_message_text(
         f"🏷 *{sc('Button 1 — Name')}*\n\n"
@@ -104,26 +216,21 @@ async def receive_btn1_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["btn1_name"] = update.message.text.strip()
     await update.message.reply_text(
         f"🔗 *{sc('Button 1 — URL')}*\n\n"
-        f"{sc('Enter a URL (https://...) or @username')}",
+        f"{sc('Enter a URL or @username')}\n"
+        f"_{sc('e.g. https://t.me/admin or @admin')}_",
         parse_mode="Markdown",
     )
     return BUTTON_1_URL
 
 
 async def receive_btn1_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    if url.startswith("@"):
-        url = f"https://t.me/{url[1:]}"
-    elif not url.startswith("http"):
-        url = f"https://t.me/{url}"
+    url = _normalise_url(update.message.text)
     context.user_data["btn1_url"] = url
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ Add 2nd Button", callback_data="add_btn2"),
-            InlineKeyboardButton("⏭️ Skip", callback_data="skip_btn2"),
-        ]
-    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("➕ " + sc("Add 2nd Button"), callback_data="add_btn2"),
+        InlineKeyboardButton("⏭️ " + sc("Skip"),           callback_data="skip_btn2"),
+    ]])
     await update.message.reply_text(
         f"✅ *{sc('Button 1 saved!')}*\n\n"
         f"🏷 `{context.user_data['btn1_name']}` → `{url}`",
@@ -133,16 +240,19 @@ async def receive_btn1_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BUTTON_2_CHOICE
 
 
+# ── Step 4b: Button 2 — name ───────────────────────────────────────────────────
+
 async def btn2_choice_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "skip_btn2":
+        # Commit button 1 and proceed to group selection
         context.user_data["buttons"] = [
-            (context.user_data["btn1_name"], context.user_data["btn1_url"])
+            {"label": context.user_data["btn1_name"],
+             "url":   context.user_data["btn1_url"]}
         ]
-        await query.edit_message_text(f"⏭️ {sc('1 button added. Selecting group...')}")
-        return await _show_group_selection(query.message, context, edit=True)
+        return await _show_group_select(update, context)
 
     await query.edit_message_text(
         f"🏷 *{sc('Button 2 — Name')}*\n\n"
@@ -156,63 +266,27 @@ async def receive_btn2_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["btn2_name"] = update.message.text.strip()
     await update.message.reply_text(
         f"🔗 *{sc('Button 2 — URL')}*\n\n"
-        f"{sc('Enter a URL (https://...) or @username')}",
+        f"{sc('Enter a URL or @username')}",
         parse_mode="Markdown",
     )
     return BUTTON_2_URL
 
 
 async def receive_btn2_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    if url.startswith("@"):
-        url = f"https://t.me/{url[1:]}"
-    elif not url.startswith("http"):
-        url = f"https://t.me/{url}"
-    context.user_data["btn2_url"] = url
+    url = _normalise_url(update.message.text)
     context.user_data["buttons"] = [
-        (context.user_data["btn1_name"], context.user_data["btn1_url"]),
-        (context.user_data["btn2_name"], url),
+        {"label": context.user_data["btn1_name"], "url": context.user_data["btn1_url"]},
+        {"label": context.user_data["btn2_name"], "url": url},
     ]
     await update.message.reply_text(
         f"✅ *{sc('Button 2 saved!')}*\n\n"
-        f"🏷 `{context.user_data['btn2_name']}` → `{url}`\n\n"
-        f"{sc('Selecting group...')}",
+        f"🏷 `{context.user_data['btn2_name']}` → `{url}`",
         parse_mode="Markdown",
     )
-    return await _show_group_selection(update.message, context, edit=False)
+    return await _show_group_select(update, context)
 
 
-async def _show_group_selection(message, context: ContextTypes.DEFAULT_TYPE, edit: bool = False):
-    db = get_db()
-    configs = await db.group_configs.find({}, {"group_id": 1, "title": 1}).to_list(length=None)
-
-    if not configs:
-        text = (
-            f"❌ *{sc('No groups found')}*\n\n"
-            f"{sc('Add the bot to a group and use /setwelcome or /setrules there first.')}"
-        )
-        if edit:
-            await message.edit_text(text, parse_mode="Markdown")
-        else:
-            await message.reply_text(text, parse_mode="Markdown")
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    buttons = []
-    for cfg in configs:
-        gid = cfg["group_id"]
-        title = cfg.get("title") or str(gid)
-        buttons.append([InlineKeyboardButton(title, callback_data=f"grp_{gid}")])
-    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="post_cancel_grp")])
-
-    keyboard = InlineKeyboardMarkup(buttons)
-    text = f"📍 *{sc('Select group to post to')}:*"
-    if edit:
-        await message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    else:
-        await message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    return SELECT_GROUP
-
+# ── Step 5: Group selected → final preview ─────────────────────────────────────
 
 async def select_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -223,7 +297,7 @@ async def select_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return ConversationHandler.END
 
-    group_id = int(query.data.replace("grp_", ""))
+    group_id = int(query.data.split(":")[1])
     context.user_data["group_id"] = group_id
 
     try:
@@ -234,29 +308,30 @@ async def select_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["group_title"] = group_title
 
     msg_text = context.user_data["message"]
-    buttons = context.user_data.get("buttons", [])
-    btn_lines = ""
-    for name, url in buttons:
-        btn_lines += f"\n🔘 `{name}` → `{url}`"
+    buttons  = context.user_data.get("buttons", [])
+    btn_lines = "".join(
+        f"\n🔘 {sc('Button')} {i+1}: `{b['label']}` → `{b['url']}`"
+        for i, b in enumerate(buttons)
+    )
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirm to Send", callback_data="final_confirm"),
-            InlineKeyboardButton("❌ Cancel", callback_data="final_cancel"),
-        ]
-    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ " + sc("Confirm to Send"), callback_data="final_confirm"),
+        InlineKeyboardButton("❌ " + sc("Cancel"),          callback_data="final_cancel"),
+    ]])
     await query.edit_message_text(
         f"📋 *{sc('Final Preview')}*\n"
         f"━━━━━━━━━━━━\n"
         f"📍 *{sc('Group')}*: {group_title}\n"
         f"📝 *{sc('Message')}*:\n{msg_text}"
-        + (f"\n{btn_lines}" if btn_lines else "") +
-        f"\n━━━━━━━━━━━━",
+        + (f"\n{btn_lines}" if btn_lines else "")
+        + "\n━━━━━━━━━━━━",
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
     return FINAL_CONFIRM
 
+
+# ── Step 6: Send post ──────────────────────────────────────────────────────────
 
 async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -267,30 +342,36 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return ConversationHandler.END
 
-    group_id = context.user_data["group_id"]
-    msg_text = context.user_data["message"]
-    buttons = context.user_data.get("buttons", [])
+    group_id    = context.user_data["group_id"]
     group_title = context.user_data.get("group_title", str(group_id))
+    msg_text    = context.user_data["message"]
+    buttons     = context.user_data.get("buttons", [])
 
+    # Build post inline keyboard (each button on its own row)
     post_keyboard = None
     if buttons:
-        row = [InlineKeyboardButton(name, url=url) for name, url in buttons]
-        post_keyboard = InlineKeyboardMarkup([row])
+        post_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(b["label"], url=b["url"])]
+            for b in buttons
+        ])
 
     try:
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             group_id,
             f"📢 *{sc('Announcement')}*\n\n{msg_text}",
             reply_markup=post_keyboard,
             parse_mode="Markdown",
         )
+        # ── Persist to dedicated posts collection ──────────────────────────
         db = get_db()
-        await db.moderation_logs.insert_one({
-            "group_id": group_id,
-            "user_id": 0,
-            "admin_id": update.effective_user.id,
-            "action": f"post sent ({len(buttons)} buttons)",
-            "created_at": datetime.now(timezone.utc),
+        await db.posts.insert_one({
+            "admin_id":    update.effective_user.id,
+            "group_id":    group_id,
+            "group_title": group_title,
+            "message_id":  sent.message_id,
+            "text":        msg_text,
+            "buttons":     buttons,           # list of {label, url} dicts
+            "sent_at":     datetime.now(timezone.utc),
         })
         await query.edit_message_text(
             f"✅ *{sc('Post Sent!')}*\n📍 {sc('Group')}: {group_title}",
@@ -306,6 +387,8 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ── Fallbacks & timeout ────────────────────────────────────────────────────────
+
 async def cancel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     if update.callback_query:
@@ -316,43 +399,77 @@ async def cancel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def _timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fires when the user has been idle for TIMEOUT seconds."""
+    context.user_data.clear()
+    try:
+        if update and update.effective_chat:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "⏰ " + sc("Post creation timed out (5 min). Use /post to start again."),
+            )
+    except Exception:
+        pass
+    return ConversationHandler.END
+
+
+# ── Registration ───────────────────────────────────────────────────────────────
+
 def register(app: Application):
     conv = ConversationHandler(
         entry_points=[CommandHandler("post", post_start)],
         states={
             TYPING_MESSAGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_message),
             ],
             CONFIRM_MESSAGE: [
-                CallbackQueryHandler(confirm_cb, pattern="^post_(confirm|cancel)$")
+                CallbackQueryHandler(confirm_cb, pattern=r"^post_(confirm|cancel)$"),
+                # Catch stray text so the conversation doesn't hang silently
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
             ],
             BUTTON_CHOICE: [
-                CallbackQueryHandler(button_choice_cb, pattern="^(add_btn|skip_btn)$")
+                CallbackQueryHandler(button_choice_cb, pattern=r"^(add_btn|skip_btn)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
             ],
             BUTTON_1_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn1_name)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn1_name),
             ],
             BUTTON_1_URL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn1_url)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn1_url),
             ],
             BUTTON_2_CHOICE: [
-                CallbackQueryHandler(btn2_choice_cb, pattern="^(add_btn2|skip_btn2)$")
+                CallbackQueryHandler(btn2_choice_cb, pattern=r"^(add_btn2|skip_btn2)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
             ],
             BUTTON_2_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn2_name)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn2_name),
             ],
             BUTTON_2_URL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn2_url)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_btn2_url),
             ],
             SELECT_GROUP: [
-                CallbackQueryHandler(select_group_cb, pattern="^(grp_-?\\d+|post_cancel_grp)$")
+                CallbackQueryHandler(
+                    select_group_cb,
+                    pattern=r"^(post_grp:-?\d+|post_cancel_grp)$"
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
             ],
             FINAL_CONFIRM: [
-                CallbackQueryHandler(final_confirm_cb, pattern="^(final_confirm|final_cancel)$")
+                CallbackQueryHandler(
+                    final_confirm_cb,
+                    pattern=r"^(final_confirm|final_cancel)$"
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
+            ],
+            ConversationHandler.TIMEOUT: [
+                MessageHandler(filters.ALL, _timeout_handler),
+                CallbackQueryHandler(_timeout_handler),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel_post)],
         conversation_timeout=TIMEOUT,
+        per_user=True,
+        per_chat=False,   # track conversation per-user even across chat contexts
         allow_reentry=True,
     )
     app.add_handler(conv)

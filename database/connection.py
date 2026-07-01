@@ -42,6 +42,10 @@ async def _create_indexes():
     await db.logs.create_index([("group_id", 1), ("created_at", -1)])
     # anti-spam flood tracking (TTL: auto-expire after 60s)
     await db.flood_track.create_index("expires_at", expireAfterSeconds=0)
+    # posts — sent announcements log
+    await db.posts.create_index("admin_id")
+    await db.posts.create_index("group_id")
+    await db.posts.create_index([("sent_at", -1)])
 
 async def disconnect_db():
     global client
