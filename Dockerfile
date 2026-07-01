@@ -1,5 +1,11 @@
 FROM python:3.11-slim
 WORKDIR /app
+
+# PYTHONUNBUFFERED=1: forces Python stdout/stderr to be unbuffered.
+# Without this, print() output is block-buffered in Docker containers and
+# may never appear in Render logs, making debugging impossible.
+ENV PYTHONUNBUFFERED=1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
