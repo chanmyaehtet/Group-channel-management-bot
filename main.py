@@ -21,12 +21,15 @@ from api.routes import router as api_router
 load_dotenv()
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
-# Makes PTB handler exceptions visible in Render logs (they go to stderr by default)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Suppress httpx INFO logs — they expose the bot token in URLs (security)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 BOT_TOKEN  = os.getenv("BOT_TOKEN",  "").strip()
 MONGO_URI  = os.getenv("MONGO_URI",  "").strip()
@@ -266,15 +269,14 @@ async def telegram_webhook(request: Request):
         )
     try:
         data = await request.json()
-        # Log a compact summary of every incoming update for debugging
-        update_id = data.get("update_id", "?")
+        update_id   = data.get("update_id", "?")
         update_type = next((k for k in data if k != "update_id"), "unknown")
-        print(f"📨 Webhook update #{update_id} type={update_type}")
+        # Use logger (stderr, always unbuffered) so this ALWAYS appears in Render logs
+        logger.info("📨 Webhook update #%s type=%s", update_id, update_type)
         update = Update.de_json(data, ptb_app.bot)
         await ptb_app.process_update(update)
     except Exception as e:
-        print(f"❌ Webhook processing error: {e}")
-        traceback.print_exc()
+        logger.error("❌ Webhook processing error: %s", e, exc_info=True)
     return Response(status_code=200)
 
 
