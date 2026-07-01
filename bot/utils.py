@@ -48,6 +48,29 @@ async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
     return None, None
 
+async def get_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Returns user_id only (or None). Used by controls.py handlers."""
+    msg = update.message
+    if msg and msg.reply_to_message and msg.reply_to_message.from_user:
+        return msg.reply_to_message.from_user.id
+    if context.args:
+        raw = context.args[0]
+        try: return int(raw)
+        except ValueError:
+            try:
+                u = await context.bot.get_chat(raw)
+                return u.id
+            except: pass
+    return None
+
+async def log_action(bot: Bot, chat_id: int, user_id: int, admin_id: int, action: str) -> None:
+    """Write a moderation action to the audit log."""
+    try:
+        from database.models import add_log
+        await add_log(chat_id, user_id, admin_id, action)
+    except Exception as e:
+        print(f"log_action error: {e}")
+
 def fmt_user(user) -> str:
     if user is None: return sc("Unknown")
     name = user.first_name or ""
