@@ -55,18 +55,27 @@ async def lifespan(app: FastAPI):
     await ptb_app.initialize()
     await ptb_app.start()
 
+    me = await ptb_app.bot.get_me()
+
     if USE_WEBHOOK:
         await ptb_app.bot.set_webhook(
             url=WEBHOOK_URL,
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
         )
-        me = await ptb_app.bot.get_me()
-        print(f"✅ Webhook: {WEBHOOK_URL}")
-        print(f"✅ Bot running as @{me.username}")
+        info = await ptb_app.bot.get_webhook_info()
+        print(f"✅ Bot: @{me.username}")
+        print(f"✅ Webhook set: {WEBHOOK_URL}")
+        print(f"✅ Pending updates: {info.pending_update_count}")
+        if info.last_error_message:
+            print(f"⚠️  Last webhook error: {info.last_error_message}")
     else:
-        me = await ptb_app.bot.get_me()
-        print(f"✅ Bot running as @{me.username} (polling mode)")
+        # FastAPI mode without webhook — bot will NOT receive any messages.
+        # Set WEBHOOK_URL env var to enable webhook mode.
+        print(f"✅ Bot: @{me.username}")
+        print("⚠️  WARNING: WEBHOOK_URL is not set!")
+        print("⚠️  Bot is running but CANNOT receive messages.")
+        print("⚠️  Fix: Set WEBHOOK_URL=https://<your-render-url>/webhook")
 
     print("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ — ready!")
 
