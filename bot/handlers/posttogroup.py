@@ -11,7 +11,7 @@ from telegram.ext import (
 from telegram.error import BadRequest, TelegramError
 
 from bot.utils import sc
-from database.connection import get_db
+from database.models import get_all_groups
 
 # ── States ──────────────────────────────────────────────────────────────────
 (
@@ -40,9 +40,8 @@ def _url(raw: str) -> str:
 async def _show_group_select(
     update: Update, context: ContextTypes.DEFAULT_TYPE, *, is_query: bool
 ) -> int:
-    db = get_db()
-    configs = await db.group_configs.find({}, {"group_id": 1}).to_list(length=None)
-    if not configs:
+    groups = await get_all_groups()
+    if not groups:
         msg = "❌ " + sc("No groups found. Add me to a group first.")
         if is_query:
             await update.callback_query.edit_message_text(msg)
@@ -52,13 +51,9 @@ async def _show_group_select(
         return ConversationHandler.END
 
     buttons = []
-    for cfg in configs:
-        gid = cfg["group_id"]
-        try:
-            chat = await context.bot.get_chat(gid)
-            title = sc((chat.title or str(gid))[:30])
-        except Exception:
-            title = sc(str(gid))
+    for g in groups:
+        gid = g["group_id"]
+        title = sc((g.get("title") or str(gid))[:30])
         buttons.append([InlineKeyboardButton(title, callback_data=f"ptg:grp:{gid}")])
 
     buttons.append([InlineKeyboardButton("❌ " + sc("Cancel"), callback_data="ptg:cancel_send")])
