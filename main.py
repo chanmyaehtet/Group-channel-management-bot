@@ -1,5 +1,8 @@
 import os
+import sys
 import asyncio
+import logging
+import httpx
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
@@ -13,6 +16,9 @@ from bot.handlers import moderation, system, broadcast, post
 
 load_dotenv()
 
+# Suppress httpx INFO logs — prevents bot token from appearing in Render logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN secret is missing.")
@@ -21,6 +27,11 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 USE_WEBHOOK = bool(WEBHOOK_URL)
 
 ptb_app: Application = None
+_keep_alive_task: asyncio.Task = None
+
+
+def log(msg: str):
+    print(msg, flush=True)
 
 
 def build_request() -> HTTPXRequest:
@@ -33,9 +44,22 @@ def build_request() -> HTTPXRequest:
     )
 
 
+async def _keep_alive_loop():
+    """Ping own health endpoint every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)  # wait for server to be fully ready
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get("http://localhost/")
+                log(f"🏓 Keep-alive ping: {r.status_code}")
+        except Exception as e:
+            log(f"⚠️  Keep-alive ping failed: {e}")
+        await asyncio.sleep(14 * 60)  # 14 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ptb_app
+    global ptb_app, _keep_alive_task
 
     await connect_db()
 
@@ -64,23 +88,26 @@ async def lifespan(app: FastAPI):
             drop_pending_updates=False,
         )
         info = await ptb_app.bot.get_webhook_info()
-        print(f"✅ Bot: @{me.username}")
-        print(f"✅ Webhook set: {WEBHOOK_URL}")
-        print(f"✅ Pending updates: {info.pending_update_count}")
+        log(f"✅ Bot: @{me.username}")
+        log(f"✅ Webhook set: {WEBHOOK_URL}")
+        log(f"✅ Pending updates: {info.pending_update_count}")
         if info.last_error_message:
-            print(f"⚠️  Last webhook error: {info.last_error_message}")
+            log(f"⚠️  Last webhook error: {info.last_error_message}")
+        # Start keep-alive background task
+        _keep_alive_task = asyncio.create_task(_keep_alive_loop())
+        log("🏓 Keep-alive task started (ping every 14 min)")
     else:
-        # FastAPI mode without webhook — bot will NOT receive any messages.
-        # Set WEBHOOK_URL env var to enable webhook mode.
-        print(f"✅ Bot: @{me.username}")
-        print("⚠️  WARNING: WEBHOOK_URL is not set!")
-        print("⚠️  Bot is running but CANNOT receive messages.")
-        print("⚠️  Fix: Set WEBHOOK_URL=https://<your-render-url>/webhook")
+        log(f"✅ Bot: @{me.username}")
+        log("⚠️  WARNING: WEBHOOK_URL is not set!")
+        log("⚠️  Bot is running but CANNOT receive messages.")
+        log("⚠️  Fix: Set WEBHOOK_URL=https://<your-render-url>/webhook")
 
-    print("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ — ready!")
+    log("ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ — ready!")
 
     yield
 
+    if _keep_alive_task:
+        _keep_alive_task.cancel()
     try:
         if USE_WEBHOOK:
             await ptb_app.bot.delete_webhook()
@@ -89,7 +116,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await disconnect_db()
-    print("Bot stopped.")
+    log("Bot stopped.")
 
 
 web_app = FastAPI(lifespan=lifespan, title="Group Management Bot")
@@ -100,6 +127,26 @@ async def health_check():
     return {"status": "✅ running", "message": "ᴛʏᴘᴇ ꜱᴏᴍᴇᴛʜɪɴɢ ᴛᴏ ꜱᴛᴀʀᴛ"}
 
 
+@web_app.get("/winfo")
+async def webhook_info():
+    """Returns live webhook status — check in browser to verify Telegram webhook."""
+    if ptb_app is None:
+        return {"error": "Bot not initialized yet"}
+    try:
+        info = await ptb_app.bot.get_webhook_info()
+        return {
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_message": info.last_error_message,
+            "last_error_date": str(info.last_error_date) if info.last_error_date else None,
+            "max_connections": info.max_connections,
+            "allowed_updates": info.allowed_updates,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @web_app.post("/webhook")
 async def telegram_webhook(request: Request):
     if ptb_app is None:
@@ -107,9 +154,10 @@ async def telegram_webhook(request: Request):
     try:
         data = await request.json()
         update = Update.de_json(data, ptb_app.bot)
+        log(f"📨 Webhook update #{update.update_id} type={list(update._get_attrs(include_private=False).keys())[0] if update else 'unknown'}")
         await ptb_app.process_update(update)
     except Exception as e:
-        print(f"Webhook error: {e}")
+        log(f"Webhook error: {e}")
     return Response(status_code=200)
 
 
