@@ -1,28 +1,26 @@
 name: Run Telegram Bot
 
 on:
-  workflow_dispatch:          # ← Manual start button
+  workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *'    # ← Auto-restart every 5 hours
+    - cron: '0 */5 * * *'
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 300      # 5 hours per run
+    timeout-minutes: 300
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install python-telegram-bot[ext]==21.5 motor==3.4.0 pymongo==4.7.2 python-dotenv==1.0.1
+        run: pip install "python-telegram-bot[ext]==21.5" motor==3.4.0 pymongo==4.7.2 python-dotenv==1.0.1 APScheduler==3.10.4 pytz==2024.1
 
-      - name: Run bot (polling mode)
+      - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           MONGO_URI: ${{ secrets.MONGO_URI }}
