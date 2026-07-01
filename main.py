@@ -1,10 +1,12 @@
 import os
 import asyncio
+import logging
+import traceback
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from telegram import Update
-from telegram.ext import Application
+from telegram.ext import Application, ContextTypes
 from telegram.request import HTTPXRequest
 import httpx
 import uvicorn
@@ -17,6 +19,14 @@ from bot.handlers.scheduler_handler import load_schedules_from_db
 from api.routes import router as api_router
 
 load_dotenv()
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Makes PTB handler exceptions visible in Render logs (they go to stderr by default)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN  = os.getenv("BOT_TOKEN",  "").strip()
 MONGO_URI  = os.getenv("MONGO_URI",  "").strip()
@@ -50,9 +60,17 @@ def build_request() -> HTTPXRequest:
     )
 
 
+async def ptb_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log ALL handler exceptions so they appear in Render logs instead of being silently dropped."""
+    err = context.error
+    print(f"❌ PTB HANDLER ERROR — update={update!r} error={err!r}")
+    traceback.print_exception(type(err), err, err.__traceback__)
+    logger.error("Unhandled PTB exception", exc_info=err)
+
+
 async def _keep_alive_loop():
     """Ping /ping every 14 minutes to prevent Render free-tier spin-down.
-    Render sleeps instances after ~15 min of inactivity; this keeps us awake.
+    Render sleeps instances after ~15 min inactivity; this keeps us awake.
     """
     await asyncio.sleep(30)  # small initial delay so server is fully ready
     port = int(os.getenv("PORT", 8000))
@@ -99,6 +117,9 @@ async def init_bot_and_db():
             .build()
         )
 
+        # ── Error handler: makes ALL handler exceptions visible in logs ──
+        ptb_app.add_error_handler(ptb_error_handler)
+
         # Register ALL handlers
         system.register(ptb_app)
         moderation.register(ptb_app)
@@ -127,6 +148,14 @@ async def init_bot_and_db():
             me = await ptb_app.bot.get_me()
             print(f"✅ Webhook set: {WEBHOOK_URL}")
             print(f"✅ Bot running as @{me.username}")
+
+            # Immediately verify webhook was accepted by Telegram
+            winfo = await ptb_app.bot.get_webhook_info()
+            print(f"📡 Telegram webhook URL  : {winfo.url}")
+            print(f"📡 Pending updates       : {winfo.pending_update_count}")
+            if winfo.last_error_message:
+                print(f"⚠️  Telegram webhook error: {winfo.last_error_message} "
+                      f"(at {winfo.last_error_date})")
         else:
             me = await ptb_app.bot.get_me()
             print(f"⚠️  No WEBHOOK_URL — bot running as @{me.username} (webhook not active).")
@@ -139,6 +168,7 @@ async def init_bot_and_db():
     except Exception as e:
         startup_error = f"Bot initialization failed: {e}"
         print(f"❌ {startup_error}")
+        traceback.print_exc()
 
 
 @asynccontextmanager
@@ -189,7 +219,7 @@ async def root():
 
 @web_app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    """Uptime Robot / keep-alive health check — always 200."""
+    """Keep-alive health check — always 200."""
     return Response(content="pong", media_type="text/plain", status_code=200)
 
 
@@ -205,9 +235,30 @@ async def health():
     }
 
 
+@web_app.get("/winfo")
+async def winfo():
+    """Return live Telegram getWebhookInfo — useful for diagnosing webhook problems."""
+    if not bot_ready or ptb_app is None:
+        return {"error": "bot not ready yet"}
+    try:
+        info = await ptb_app.bot.get_webhook_info()
+        return {
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_date": str(info.last_error_date) if info.last_error_date else None,
+            "last_error_message": info.last_error_message,
+            "max_connections": info.max_connections,
+            "allowed_updates": list(info.allowed_updates) if info.allowed_updates else [],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @web_app.post("/webhook")
 async def telegram_webhook(request: Request):
     if not bot_ready or ptb_app is None:
+        logger.warning("Webhook hit but bot not ready yet — returning 503")
         return Response(
             content='{"error":"bot not ready"}',
             media_type="application/json",
@@ -215,10 +266,15 @@ async def telegram_webhook(request: Request):
         )
     try:
         data = await request.json()
+        # Log a compact summary of every incoming update for debugging
+        update_id = data.get("update_id", "?")
+        update_type = next((k for k in data if k != "update_id"), "unknown")
+        print(f"📨 Webhook update #{update_id} type={update_type}")
         update = Update.de_json(data, ptb_app.bot)
         await ptb_app.process_update(update)
     except Exception as e:
-        print(f"Webhook error: {e}")
+        print(f"❌ Webhook processing error: {e}")
+        traceback.print_exc()
     return Response(status_code=200)
 
 
