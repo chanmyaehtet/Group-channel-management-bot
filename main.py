@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request, Response
 from telegram import Update
 from telegram.ext import Application
 from telegram.request import HTTPXRequest
+import httpx
 import uvicorn
 
 from database.connection import connect_db, disconnect_db
@@ -36,6 +37,7 @@ ptb_app:       Application = None
 bot_ready:     bool        = False
 db_ready:      bool        = False
 startup_error: str         = None
+_keep_alive_task           = None
 
 
 def build_request() -> HTTPXRequest:
@@ -46,6 +48,23 @@ def build_request() -> HTTPXRequest:
         pool_timeout=30.0,
         http_version="1.1",
     )
+
+
+async def _keep_alive_loop():
+    """Ping /ping every 14 minutes to prevent Render free-tier spin-down.
+    Render sleeps instances after ~15 min of inactivity; this keeps us awake.
+    """
+    await asyncio.sleep(30)  # small initial delay so server is fully ready
+    port = int(os.getenv("PORT", 8000))
+    url  = f"http://localhost:{port}/ping"
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.get(url)
+            print("🏓 Keep-alive ping sent")
+        except Exception as e:
+            print(f"⚠️  Keep-alive ping failed: {e}")
+        await asyncio.sleep(14 * 60)   # 14 minutes
 
 
 async def init_bot_and_db():
@@ -80,7 +99,7 @@ async def init_bot_and_db():
             .build()
         )
 
-        # Register ALL handlers (same set as main_polling.py)
+        # Register ALL handlers
         system.register(ptb_app)
         moderation.register(ptb_app)
         broadcast.register(ptb_app)
@@ -124,11 +143,15 @@ async def init_bot_and_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start HTTP server immediately — init bot/DB in background
+    global _keep_alive_task
+    # Start HTTP server immediately — init bot/DB and keep-alive in background
     asyncio.create_task(init_bot_and_db())
+    _keep_alive_task = asyncio.create_task(_keep_alive_loop())
     yield
     # Shutdown
     global ptb_app
+    if _keep_alive_task:
+        _keep_alive_task.cancel()
     try:
         if ptb_app and bot_ready:
             from bot.handlers.scheduler_handler import get_scheduler
@@ -166,7 +189,7 @@ async def root():
 
 @web_app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    """Uptime Robot health check — always 200."""
+    """Uptime Robot / keep-alive health check — always 200."""
     return Response(content="pong", media_type="text/plain", status_code=200)
 
 
