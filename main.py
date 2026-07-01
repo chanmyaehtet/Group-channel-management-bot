@@ -118,8 +118,9 @@ async def lifespan(app: FastAPI):
     if _keep_alive_task:
         _keep_alive_task.cancel()
     try:
-        if USE_WEBHOOK:
-            await ptb_app.bot.delete_webhook()
+        # Do NOT delete_webhook() here — Render free tier shuts down on idle,
+        # and deleting the webhook creates a dead cycle where Telegram has no
+        # URL to call, so the service never wakes up again.
         await ptb_app.stop()
         await ptb_app.shutdown()
     except Exception:
