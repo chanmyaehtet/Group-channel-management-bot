@@ -47,14 +47,23 @@ async def upsert_user(user_id: int, username: str = None,
                       pm_active: bool = None) -> None:
     db = get_db()
     set_fields = {"last_seen": _now()}
-    if username is not None:  set_fields["username"]   = username
-    if first_name is not None: set_fields["first_name"] = first_name
-    if last_name is not None:  set_fields["last_name"]  = last_name
-    if pm_active is not None:  set_fields["pm_active"]  = pm_active
-    await db.users.update_one({"user_id": user_id},
-        {"$set": set_fields,
-         "$setOnInsert": {"user_id": user_id, "first_seen": _now(), "pm_active": False}},
-        upsert=True)
+    if username is not None:   set_fields["username"]    = username
+    if first_name is not None: set_fields["first_name"]  = first_name
+    if last_name is not None:  set_fields["last_name"]   = last_name
+    if pm_active is not None:  set_fields["pm_active"]   = pm_active
+
+    # FIX: pm_active must NOT appear in both $set and $setOnInsert at the same time.
+    # $setOnInsert only provides the default (False) when the document is being
+    # created for the first time AND pm_active is not already being set via $set.
+    set_on_insert: dict = {"user_id": user_id, "first_seen": _now()}
+    if pm_active is None:
+        set_on_insert["pm_active"] = False  # default only on new-document insert
+
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": set_fields, "$setOnInsert": set_on_insert},
+        upsert=True,
+    )
 
 async def get_all_pm_users() -> list:
     db = get_db()

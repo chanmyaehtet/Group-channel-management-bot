@@ -9,14 +9,17 @@ from telegram.request import HTTPXRequest
 import uvicorn
 
 from database.connection import connect_db, disconnect_db
-from bot.handlers import moderation, system, broadcast, controls, posttogroup
+from bot.handlers import (moderation, system, broadcast, controls, posttogroup,
+                           group_controls, owner, antispam, cleaner,
+                           scheduler_handler, post_handler)
+from bot.handlers.scheduler_handler import load_schedules_from_db
 from api.routes import router as api_router
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-MONGO_URI = os.getenv("MONGO_URI", "").strip()
-OWNER_IDS = os.getenv("OWNER_IDS", "").strip()
+BOT_TOKEN  = os.getenv("BOT_TOKEN",  "").strip()
+MONGO_URI  = os.getenv("MONGO_URI",  "").strip()
+OWNER_IDS  = os.getenv("OWNER_IDS",  "").strip()
 
 # Auto-detect webhook URL: explicit env var takes priority,
 # then Render's auto-injected RENDER_EXTERNAL_URL
@@ -29,10 +32,10 @@ if not WEBHOOK_URL:
 USE_WEBHOOK = bool(WEBHOOK_URL)
 
 # Global state
-ptb_app: Application = None
-bot_ready: bool = False
-db_ready: bool = False
-startup_error: str = None
+ptb_app:       Application = None
+bot_ready:     bool        = False
+db_ready:      bool        = False
+startup_error: str         = None
 
 
 def build_request() -> HTTPXRequest:
@@ -77,14 +80,24 @@ async def init_bot_and_db():
             .build()
         )
 
-        moderation.register(ptb_app)
+        # Register ALL handlers (same set as main_polling.py)
         system.register(ptb_app)
+        moderation.register(ptb_app)
         broadcast.register(ptb_app)
         controls.register(ptb_app)
+        group_controls.register(ptb_app)
+        owner.register(ptb_app)
+        antispam.register(ptb_app)
+        cleaner.register(ptb_app)
+        scheduler_handler.register(ptb_app)
+        post_handler.register(ptb_app)
         posttogroup.register(ptb_app)
 
         await ptb_app.initialize()
         await ptb_app.start()
+
+        # Load scheduled jobs from DB
+        await load_schedules_from_db(ptb_app.bot)
 
         if USE_WEBHOOK:
             await ptb_app.bot.set_webhook(
@@ -97,7 +110,7 @@ async def init_bot_and_db():
             print(f"✅ Bot running as @{me.username}")
         else:
             me = await ptb_app.bot.get_me()
-            print(f"⚠️  No WEBHOOK_URL — bot running as @{me.username} but won't receive updates.")
+            print(f"⚠️  No WEBHOOK_URL — bot running as @{me.username} (webhook not active).")
             print("   Set WEBHOOK_URL or RENDER_EXTERNAL_URL env var to enable webhook.")
 
         bot_ready = True
@@ -118,6 +131,10 @@ async def lifespan(app: FastAPI):
     global ptb_app
     try:
         if ptb_app and bot_ready:
+            from bot.handlers.scheduler_handler import get_scheduler
+            sched = get_scheduler()
+            if sched.running:
+                sched.shutdown(wait=False)
             if USE_WEBHOOK:
                 await ptb_app.bot.delete_webhook()
             await ptb_app.stop()
@@ -149,7 +166,7 @@ async def root():
 
 @web_app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    """Uptime Robot health check — always 200. Accepts both GET and HEAD requests."""
+    """Uptime Robot health check — always 200."""
     return Response(content="pong", media_type="text/plain", status_code=200)
 
 
@@ -186,5 +203,5 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"Starting server on port {port}")
     print(f"Webhook mode: {USE_WEBHOOK}")
-    print(f"Webhook URL: {WEBHOOK_URL or 'not set'}")
+    print(f"Webhook URL:  {WEBHOOK_URL or 'not set'}")
     uvicorn.run(web_app, host="0.0.0.0", port=port, log_level="info")
