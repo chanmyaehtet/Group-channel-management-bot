@@ -43,20 +43,27 @@ async def clean(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await bot_is_admin(ctx.bot, cid):
         return await update.message.reply_text(sc("I need admin rights."))
 
-    msg = await update.message.reply_text(f"🔍 {sc('Scanning admins for deleted accounts...')}")
+    msg = await update.message.reply_text(f"🔍 {sc('Scanning for deleted admin accounts...')}")
     kicked = 0
     try:
         admins = await ctx.bot.get_chat_administrators(cid)
         for member in admins:
-            # Telegram marks deleted accounts with first_name=""
-            if member.user.first_name == "" or member.user.is_bot:
+            # Telegram marks deleted accounts with first_name="" and is_bot=False
+            # BUG-14 FIX: actually kick deleted accounts found in admin list
+            if member.user.is_bot:
                 continue
-            # Cannot enumerate all members via Bot API — only admins are accessible
+            if not member.user.first_name:  # deleted account
+                try:
+                    await ctx.bot.ban_chat_member(cid, member.user.id)
+                    await ctx.bot.unban_chat_member(cid, member.user.id)
+                    kicked += 1
+                except Exception:
+                    pass
         await msg.edit_text(
             f"✅ *{sc('Scan complete')}*\n"
             f"🗑️ {sc('Kicked')}: *{kicked}*\n\n"
-            f"_{sc('Note: Telegram Bot API does not expose the full member list.')}_\n"
-            f"_{sc('Only deleted-account admins can be detected automatically.')}_",
+            f"_{sc('Note: Telegram Bot API only exposes admin members.')}_\n"
+            f"_{sc('Regular deleted accounts in the group cannot be detected via Bot API.')}_",
             parse_mode="Markdown",
         )
     except Exception as e:

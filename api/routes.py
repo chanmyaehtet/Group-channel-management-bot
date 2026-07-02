@@ -15,7 +15,14 @@ api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
 
 
 def verify_token(token: str = Security(api_key_header)):
-    if API_TOKEN and token != API_TOKEN:
+    # BUG-04 FIX: if API_TOKEN is not configured, disable API access entirely.
+    # Previously an empty API_TOKEN bypassed auth and exposed all data publicly.
+    if not API_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="REST API is disabled. Set the API_TOKEN environment variable to enable it."
+        )
+    if token != API_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid API token")
     return token
 
@@ -34,6 +41,8 @@ async def get_logs(
     action: Optional[str] = None,
     token: str = Security(verify_token),
 ):
+    # BUG-17 FIX: cap limit to prevent excessively large responses
+    limit = min(limit, 1000)
     db = get_db()
     query: Dict[str, Any] = {}
     if group_id: query["group_id"] = group_id
@@ -71,6 +80,8 @@ async def get_groups(
     skip: int = 0, limit: int = 100,
     token: str = Security(verify_token),
 ):
+    # BUG-17 FIX: cap limit
+    limit = min(limit, 1000)
     db = get_db()
     cursor = db.groups.find({}, {"_id": 0}).skip(skip).limit(limit)
     groups = await cursor.to_list(length=limit)

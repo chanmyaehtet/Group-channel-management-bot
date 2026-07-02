@@ -46,7 +46,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from bot.utils import sc, is_owner, is_admin
+from bot.utils import sc, md_escape, is_owner, is_admin
 from database.connection import get_db
 from database.models import get_all_groups
 
@@ -199,8 +199,10 @@ async def receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("✅ " + sc("Confirm"), callback_data="post_confirm"),
         InlineKeyboardButton("❌ " + sc("Cancel"),  callback_data="post_cancel"),
     ]])
+    # BUG-03 FIX: escape user text so Markdown special chars don't break the preview
+    preview_text = md_escape(update.message.text)
     await update.message.reply_text(
-        f"📋 *{sc('Post Preview')}:*\n\n{update.message.text}",
+        f"📋 *{sc('Post Preview')}:*\n\n{preview_text}",
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
@@ -411,9 +413,11 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
     try:
+        # BUG-03 FIX: escape user-supplied text before embedding in Markdown
+        safe_msg = md_escape(msg_text)
         sent = await context.bot.send_message(
             group_id,
-            f"📢 *{sc('Announcement')}*\n\n{msg_text}",
+            f"📢 *{sc('Announcement')}*\n\n{safe_msg}",
             reply_markup=post_keyboard,
             parse_mode="Markdown",
         )

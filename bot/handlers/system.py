@@ -56,7 +56,7 @@ _MENU: dict[str, str] = {
         f"`/rules` — {sc('Show group rules')}\n"
         f"`/setwelcome <text>` — {sc('Custom welcome message')}\n"
         f"`/setgoodbye <text>` — {sc('Custom goodbye message')}\n\n"
-        f"{sc('Placeholders: {{user}} {{first}} {{last}} {{username}} {{group}}')}"
+        f"{sc('Placeholders: {{user}} {{first_name}} {{last_name}} {{username}} {{group}}')}"
     ),
     "settings": (
         f"⚙️ *{sc('Settings & Anti-Spam')}*\n\n"
@@ -350,7 +350,8 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             return template
 
     try:
-        if joined:
+        # BUG-01 FIX: check auto_welcome / auto_goodbye settings before sending
+        if joined and settings.get("auto_welcome", True):
             user = result.new_chat_member.user
             template = settings.get(
                 "welcome_message",
@@ -358,7 +359,7 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             ) or "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!"
             await context.bot.send_message(result.chat.id, fmt(template, user))
             await log_action(context.bot, result.chat.id, user.id, 0, "joined the group")
-        elif left:
+        elif left and settings.get("auto_goodbye", True):
             user   = result.old_chat_member.user
             action = "was banned" if new_status == ChatMember.BANNED else "left the group"
             template = settings.get(

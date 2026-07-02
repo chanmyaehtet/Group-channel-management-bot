@@ -3,6 +3,9 @@ from telegram import Bot, ChatMember
 from telegram.ext import ContextTypes
 from telegram import Update
 
+# BUG-15 FIX: track cleanup counter to avoid checking len() every call
+_cooldown_call_count = 0
+
 OWNER_IDS = [int(x.strip()) for x in os.getenv("OWNER_IDS","").split(",") if x.strip().isdigit()]
 
 SC = str.maketrans(
@@ -26,20 +29,38 @@ async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
         m = await bot.get_chat_member(chat_id, user_id)
         return m.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    except: return False
+    except Exception:
+        return False
 
 async def bot_is_admin(bot: Bot, chat_id: int) -> bool:
     try:
         me = await bot.get_me()
         m = await bot.get_chat_member(chat_id, me.id)
         return m.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    except: return False
+    except Exception:
+        return False
 
 _cooldowns: dict = {}
+
+def _cleanup_cooldowns() -> None:
+    """BUG-07 FIX: Remove stale cooldown entries older than 60 s to prevent memory leak."""
+    now = time.time()
+    stale = [k for k, v in _cooldowns.items() if now - v > 60]
+    for k in stale:
+        del _cooldowns[k]
+
 def check_cooldown(user_id: int, cmd: str, secs: float = 2.0) -> bool:
-    key = f"{user_id}_{cmd}"; now = time.time()
-    if key in _cooldowns and now - _cooldowns[key] < secs: return False
-    _cooldowns[key] = now; return True
+    global _cooldown_call_count
+    key = f"{user_id}_{cmd}"
+    now = time.time()
+    if key in _cooldowns and now - _cooldowns[key] < secs:
+        return False
+    _cooldowns[key] = now
+    # Periodically purge stale entries (every ~200 calls)
+    _cooldown_call_count += 1
+    if _cooldown_call_count % 200 == 0:
+        _cleanup_cooldowns()
+    return True
 
 async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Returns (user_id, user_obj_or_None). Checks reply, then args."""
@@ -55,7 +76,8 @@ async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lookup = raw if raw.startswith("@") else f"@{raw}"
                 u = await context.bot.get_chat(lookup)
                 return u.id, u
-            except: pass
+            except Exception:
+                pass
     return None, None
 
 async def get_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,7 +93,8 @@ async def get_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 lookup = raw if raw.startswith("@") else f"@{raw}"
                 u = await context.bot.get_chat(lookup)
                 return u.id
-            except: pass
+            except Exception:
+                pass
     return None
 
 async def log_action(bot: Bot, chat_id: int, user_id: int, admin_id: int, action: str) -> None:

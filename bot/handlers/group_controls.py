@@ -1,3 +1,8 @@
+# BUG-11: This file is DEAD CODE — it is never imported or registered in main.py.
+# The commands defined here (lock, unlock, pin, unpin, promote, demote) are fully
+# handled by bot/handlers/controls.py which IS registered.
+# This file is kept for reference only. Do NOT register it — it would cause duplicate
+# command conflicts with controls.py.
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import TelegramError

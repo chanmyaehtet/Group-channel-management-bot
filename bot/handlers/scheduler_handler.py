@@ -55,7 +55,10 @@ async def load_schedules_from_db(bot: Bot):
                 datetime.combine(now.date(), dt_time(h, m))
             )
             if fire_time <= now:
-                continue  # already past today — skip
+                # BUG-06 FIX: deactivate past-due onetime schedules so they don't
+                # accumulate in the DB and get re-loaded on every restart.
+                await deactivate_schedule(sid)
+                continue
             trigger = DateTrigger(run_date=fire_time)
         else:
             trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ)

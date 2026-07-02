@@ -1,6 +1,7 @@
 import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.error import RetryAfter
 from bot.utils import sc, is_owner, fmt_user
 from bot.middleware import blacklist_check
 from database.models import (block, unblock, count_users, count_groups,
@@ -81,7 +82,7 @@ async def blockgroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(sc("Provide a numeric group ID."))
     await block("group", gid, update.effective_user.id)
     try: await context.bot.leave_chat(gid)
-    except: pass
+    except Exception: pass
     await update.message.reply_text(f"🚫 {sc('Group')} `{gid}` {sc('blocked and left.')}", parse_mode="Markdown")
 
 @owner_only
@@ -113,8 +114,20 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"📡 {sc('Broadcasting to')} *{len(targets)}*...", parse_mode="Markdown")
         ok = fail = 0
         for tid in targets:
-            try: await context.bot.send_message(tid, text); ok += 1; await asyncio.sleep(0.05)
-            except: fail += 1
+            # BUG-10 FIX: handle Telegram RetryAfter with proper backoff instead of failing
+            try:
+                await context.bot.send_message(tid, text)
+                ok += 1
+                await asyncio.sleep(0.05)
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+                try:
+                    await context.bot.send_message(tid, text)
+                    ok += 1
+                except Exception:
+                    fail += 1
+            except Exception:
+                fail += 1
         await msg.edit_text(f"✅ *{sc('Done')}*\n📨 {sc('Sent')}: *{ok}* | ❌ {sc('Failed')}: *{fail}*", parse_mode="Markdown")
     elif target == "group" and len(args) >= 3:
         try: gid = int(args[1])

@@ -67,6 +67,8 @@ async def kick(update: Update, ctx):
         await update.message.reply_text(f"👢 {sc('User kicked.')}")
     except TelegramError as e:
         await update.message.reply_text(f"❌ {e.message}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
 
 
 # ── /ban ───────────────────────────────────────────────────────────────────────
@@ -100,6 +102,8 @@ async def ban(update: Update, ctx):
 @_group_guard
 async def unban(update: Update, ctx):
     if not await _require_admin(update, ctx): return
+    # BUG-09 FIX: bot needs admin rights to unban members
+    if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
         return await update.message.reply_text(sc("Reply or provide user ID / @username."))
@@ -215,6 +219,9 @@ async def warn(update: Update, ctx):
 async def unwarn(update: Update, ctx):
     if await blacklist_check(update, ctx): return
     uid = update.effective_user.id
+    # BUG-13 FIX: add rate limiting — this command works in PM too so _group_guard can't be used
+    if not check_cooldown(uid, "unwarn"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
 
     if update.effective_chat.type == "private":
         # PM: /unwarn <user_id> <group_id>
@@ -254,6 +261,9 @@ async def unwarn(update: Update, ctx):
 async def warnings_cmd(update: Update, ctx):
     if await blacklist_check(update, ctx): return
     uid = update.effective_user.id
+    # BUG-13 FIX: add rate limiting — this command works in PM too so _group_guard can't be used
+    if not check_cooldown(uid, "warnings"):
+        return await update.message.reply_text(sc("Please wait before using this command again."))
 
     if update.effective_chat.type == "private":
         # PM: /warnings <user_id> <group_id>

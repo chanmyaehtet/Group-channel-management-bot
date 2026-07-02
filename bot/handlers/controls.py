@@ -225,7 +225,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if is_pm:
             # In PM: no chat_member query possible — show public profile only
-            warn_count = 0  # cannot query group warnings without group context
+            # BUG-16 FIX: removed dead warn_count = 0 variable that was never used in PM text
             text = (
                 f"👤 *{sc('User Info')}*\n"
                 f"━━━━━━━━━━━━━━━━\n"

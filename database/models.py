@@ -4,6 +4,7 @@ Handlers never touch raw pymongo/motor directly.
 """
 from datetime import datetime, timezone
 from typing import Optional
+import hashlib
 from .connection import get_db
 
 def _now():
@@ -53,7 +54,8 @@ async def update_group_setting(group_id: int, key: str, value) -> None:
 
 async def get_all_groups() -> list:
     db = get_db()
-    return await db.groups.find({}, {"group_id": 1, "title": 1}).to_list(None)
+    # BUG-12 FIX: exclude _id field from projection
+    return await db.groups.find({}, {"group_id": 1, "title": 1, "_id": 0}).to_list(None)
 
 def _default_settings() -> dict:
     return {
@@ -173,7 +175,9 @@ async def track_message(group_id: int, user_id: int, text: str) -> int:
     db  = get_db()
     now = _now()
     window_start = now - timedelta(seconds=10)
-    key     = f"{group_id}:{user_id}:{hash(text)}"
+    # BUG-05 FIX: use hashlib instead of hash() which is randomized per process restart
+    text_hash = hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+    key     = f"{group_id}:{user_id}:{text_hash}"
     expires = now + timedelta(seconds=60)
 
     await db.flood_track.update_one(

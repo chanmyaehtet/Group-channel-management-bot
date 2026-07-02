@@ -8,7 +8,9 @@ from bot.utils import sc, is_admin, is_owner, bot_is_admin
 from bot.middleware import blacklist_check
 from database.models import update_group_setting, get_group, track_message
 
-URL_RE = re.compile(r'(https?://|t\.me/|tg://|@\w{5,})', re.IGNORECASE)
+# BUG-08 FIX: removed @\w{5,} which falsely flagged legitimate @mentions as spam.
+# Invite links come through t.me/ patterns; regular @mentions are not spam.
+URL_RE = re.compile(r'(https?://|t\.me/|tg://)', re.IGNORECASE)
 FLOOD_THRESHOLD = 5  # same message N times in 10s = flood
 
 
