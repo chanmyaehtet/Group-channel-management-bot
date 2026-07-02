@@ -21,9 +21,13 @@ from database.models import get_group, update_group_setting, upsert_group
 # ── /start menu ────────────────────────────────────────────────────────────────
 
 _MENU: dict[str, str] = {
+    # NOTE: sc() only translates letters — underscores (_) are preserved as-is.
+    # Telegram Markdown v1 treats _ as italic delimiter, so any _ in plain text
+    # (outside backtick code spans) will break the parser silently.
+    # Fix: avoid _ in description strings; use spaces or place terms in backticks.
     "mod": (
         f"🛡 *{sc('Moderation Commands')}*\n\n"
-        f"`/kick` — {sc('Kick a user (reply or user_id)')}\n"
+        f"`/kick` — {sc('Kick a user (reply or id)')}\n"
         f"`/ban` — {sc('Permanently ban a user')}\n"
         f"`/unban <id>` — {sc('Unban a user')}\n"
         f"`/mute [sec]` — {sc('Mute a user')}\n"
@@ -41,8 +45,8 @@ _MENU: dict[str, str] = {
         f"`/unwarn` — {sc('Remove last warning')}\n"
         f"`/warnings` — {sc('View all warnings')}\n"
         f"`/setwarnlimit <n>` — {sc('Set auto-ban limit (default: 3)')}\n\n"
-        f"_{sc('PM usage: /warnings <user_id> <group_id>')}_\n"
-        f"_{sc('When a user reaches the warn limit they are automatically banned.')}_"
+        f"{sc('PM: /warnings <user id> <group id>')}\n"
+        f"{sc('Reaching the warn limit auto-bans the user.')}"
     ),
     "group": (
         f"🔒 *{sc('Group Control')}*\n\n"
@@ -52,7 +56,7 @@ _MENU: dict[str, str] = {
         f"`/rules` — {sc('Show group rules')}\n"
         f"`/setwelcome <text>` — {sc('Custom welcome message')}\n"
         f"`/setgoodbye <text>` — {sc('Custom goodbye message')}\n\n"
-        f"_{sc('Placeholders: {user} {first_name} {last_name} {username} {group}')}_"
+        f"{sc('Placeholders: {{user}} {{first}} {{last}} {{username}} {{group}}')}"
     ),
     "settings": (
         f"⚙️ *{sc('Settings & Anti-Spam')}*\n\n"
@@ -68,15 +72,15 @@ _MENU: dict[str, str] = {
         f"`/setschedule always HH:MM <text>` — {sc('Send every day at that time')}\n"
         f"`/listschedules` — {sc('Show active schedules for this group')}\n"
         f"`/delschedule <id>` — {sc('Delete a schedule')}\n\n"
-        f"_{sc('All times are in Asia/Yangon timezone (UTC+6:30).')}_"
+        f"{sc('All times are in Asia/Yangon timezone (UTC+6:30).')}"
     ),
     "id": (
         f"👤 *{sc('ID & Info')}*\n\n"
-        f"`/id` — {sc('Your own Telegram ID + group ID')}\n"
+        f"`/id` — {sc('Your own Telegram ID and group ID')}\n"
         f"`/id @username` — {sc('Look up any username (works in PM too)')}\n"
-        f"`/id` _(reply)_ — {sc('ID of replied-to user')}\n"
-        f"`/info` — {sc('Full profile info & warnings (works in PM too)')}\n"
-        f"`/warnings <user_id> <group_id>` — {sc('Check warnings from PM')}"
+        f"`/id` (reply) — {sc('ID of replied-to user')}\n"
+        f"`/info` — {sc('Full profile info and warnings (works in PM too)')}\n"
+        f"`/warnings <user id> <group id>` — {sc('Check warnings from PM')}"
     ),
     "owner": (
         f"👑 *{sc('Owner Panel')}*\n\n"
