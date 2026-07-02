@@ -1,29 +1,24 @@
 """
-System handlers: /start (inline menu), /ping, welcome/goodbye, setwelcome,
-setgoodbye, setrules, rules, setwarnlimit.
+System handlers: /start (inline menu), /ping, welcome/goodbye,
+setwelcome, setgoodbye, setrules, rules.
 """
 
 from datetime import datetime, timezone
 
 from telegram import (
-    Update,
-    ChatMember,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    Update, ChatMember,
+    InlineKeyboardButton, InlineKeyboardMarkup,
 )
 from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    ChatMemberHandler,
-    CommandHandler,
-    ContextTypes,
+    Application, CallbackQueryHandler,
+    ChatMemberHandler, CommandHandler, ContextTypes,
 )
 
 from bot.utils import sc, is_admin, is_owner, check_cooldown, log_action
-from database.connection import get_db
+from database.models import get_group, update_group_setting, upsert_group
 
 
-# ── /start menu content ────────────────────────────────────────────────────────
+# ── /start menu ────────────────────────────────────────────────────────────────
 
 _MENU: dict[str, str] = {
     "mod": (
@@ -33,7 +28,7 @@ _MENU: dict[str, str] = {
         f"`/unban <id>` — {sc('Unban a user')}\n"
         f"`/mute [sec]` — {sc('Mute a user')}\n"
         f"`/unmute` — {sc('Unmute a user')}\n"
-        f"`/purge [n]` — {sc('Delete last N messages')}\n"
+        f"`/purge [n]` — {sc('Delete last N messages (max 100)')}\n"
         f"`/pin` — {sc('Pin replied message')}\n"
         f"`/unpin` — {sc('Unpin message')}\n"
         f"`/promote` — {sc('Promote user to admin')}\n"
@@ -70,29 +65,31 @@ _MENU: dict[str, str] = {
         f"⏰ *{sc('Scheduling')}*\n\n"
         f"`/setschedule onetime HH:MM <text>` — {sc('Send once at that time')}\n"
         f"`/setschedule always HH:MM <text>` — {sc('Send every day at that time')}\n"
-        f"`/listschedules` — {sc('Show active schedules')}\n"
-        f"`/delschedule <id>` — {sc('Delete a schedule')}"
+        f"`/listschedules` — {sc('Show active schedules for this group')}\n"
+        f"`/delschedule <id>` — {sc('Delete a schedule')}\n\n"
+        f"_{sc('All times are in Asia/Yangon timezone (UTC+6:30).')}_"
     ),
     "id": (
         f"👤 *{sc('ID & Info')}*\n\n"
-        f"`/id` — {sc('Your own Telegram ID')}\n"
+        f"`/id` — {sc('Your own Telegram ID + group ID')}\n"
         f"`/id @username` — {sc('Look up any username')}\n"
         f"`/id` _(reply)_ — {sc('ID of replied-to user')}\n"
-        f"`/info` — {sc('Full profile info')}"
+        f"`/info` — {sc('Full profile info & warnings')}"
     ),
     "owner": (
         f"👑 *{sc('Owner Panel')}*\n\n"
-        f"`/status` — {sc('System status')}\n"
-        f"`/ping` — {sc('Response speed')}\n"
-        f"`/users` — {sc('Total user count')}\n"
-        f"`/groups` — {sc('Total group count')}\n"
-        f"`/blockuser <id>` — {sc('Block a user')}\n"
+        f"`/status` — {sc('System status (users & groups)')}\n"
+        f"`/ping` — {sc('Response speed (ms)')}\n"
+        f"`/listusers` — {sc('Total user count')}\n"
+        f"`/listgroups` — {sc('All registered groups')}\n"
+        f"`/blockuser <id>` — {sc('Block a user globally')}\n"
         f"`/unblockuser <id>` — {sc('Unblock a user')}\n"
-        f"`/blockgroup <id>` — {sc('Block a group')}\n"
+        f"`/blockgroup <id>` — {sc('Block & leave a group')}\n"
         f"`/unblockgroup <id>` — {sc('Unblock a group')}\n"
-        f"`/broadcast all <text>` — {sc('Broadcast to all users')}\n"
-        f"`/broadcast <group_id> <text>` — {sc('Broadcast to one group')}\n"
-        f"`/post` — {sc('Create & send an announcement')}"
+        f"`/broadcast all <text>` — {sc('Broadcast to all users & groups')}\n"
+        f"`/broadcast group <id> <text>` — {sc('Send to one group')}\n"
+        f"`/broadcast user <id> <text>` — {sc('Send to one user')}\n"
+        f"`/post` — {sc('Create & send an announcement with buttons')}"
     ),
 }
 
@@ -102,16 +99,16 @@ _BACK_ROW = [[InlineKeyboardButton(f"« {sc('Back')}", callback_data="menu:back"
 def _main_keyboard(owner: bool) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(f"🛡 {sc('Moderation')}",   callback_data="menu:mod"),
-            InlineKeyboardButton(f"⚠️ {sc('Warnings')}",     callback_data="menu:warn"),
+            InlineKeyboardButton(f"🛡 {sc('Moderation')}",    callback_data="menu:mod"),
+            InlineKeyboardButton(f"⚠️ {sc('Warnings')}",      callback_data="menu:warn"),
         ],
         [
-            InlineKeyboardButton(f"🔒 {sc('Group Control')}", callback_data="menu:group"),
-            InlineKeyboardButton(f"⚙️ {sc('Settings')}",     callback_data="menu:settings"),
+            InlineKeyboardButton(f"🔒 {sc('Group Control')}",  callback_data="menu:group"),
+            InlineKeyboardButton(f"⚙️ {sc('Settings')}",      callback_data="menu:settings"),
         ],
         [
-            InlineKeyboardButton(f"⏰ {sc('Scheduling')}",   callback_data="menu:schedule"),
-            InlineKeyboardButton(f"👤 {sc('ID & Info')}",    callback_data="menu:id"),
+            InlineKeyboardButton(f"⏰ {sc('Scheduling')}",    callback_data="menu:schedule"),
+            InlineKeyboardButton(f"👤 {sc('ID & Info')}",     callback_data="menu:id"),
         ],
     ]
     if owner:
@@ -140,15 +137,12 @@ def _welcome_text(first_name: str) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
-
-    # In a group just show a short notice
     if chat.type != "private":
         await update.message.reply_text(
             f"👋 {sc('Hi')} {user.first_name}! "
             f"{sc('DM me to see all available commands.')}",
         )
         return
-
     owner = is_owner(user.id)
     await update.message.reply_text(
         _welcome_text(user.first_name),
@@ -157,14 +151,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Menu callbacks ─────────────────────────────────────────────────────────────
+# ── Inline menu callbacks ──────────────────────────────────────────────────────
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     user  = query.from_user
-    key   = query.data.split(":")[1]   # e.g. "mod", "warn", "back"
+    key   = query.data.split(":")[1]
     owner = is_owner(user.id)
 
     if key == "back":
@@ -175,7 +168,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Owner-gate
     if key == "owner" and not owner:
         await query.answer(f"⛔ {sc('Owner only.')}", show_alert=True)
         return
@@ -191,12 +183,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── /ping ──────────────────────────────────────────────────────────────────────
-
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🏓 {sc('Pong!')}")
-
-
 # ── /rules ─────────────────────────────────────────────────────────────────────
 
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,12 +190,12 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             sc("Please wait before using this command again.")
         )
-    db = get_db()
-    config = await db.group_configs.find_one({"group_id": update.effective_chat.id})
-    if not config or not config.get("rules"):
+    group = await get_group(update.effective_chat.id)
+    rules_text = group.get("settings", {}).get("rules", "")
+    if not rules_text:
         return await update.message.reply_text(sc("No rules set for this group."))
     await update.message.reply_text(
-        f"📜 *{sc('Rules')}*\n\n{config['rules']}", parse_mode="Markdown"
+        f"📜 *{sc('Rules')}*\n\n{rules_text}", parse_mode="Markdown"
     )
 
 
@@ -229,24 +215,7 @@ async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return await update.message.reply_text(sc("Please provide the rules text."))
     rules_text = " ".join(context.args)
-    title = update.effective_chat.title or str(cid)
-    db = get_db()
-    await db.group_configs.update_one(
-        {"group_id": cid},
-        {
-            "$set": {
-                "rules": rules_text,
-                "title": title,
-                "updated_at": datetime.now(timezone.utc),
-            },
-            "$setOnInsert": {
-                "group_id": cid,
-                "warn_limit": 3,
-                "created_at": datetime.now(timezone.utc),
-            },
-        },
-        upsert=True,
-    )
+    await update_group_setting(cid, "rules", rules_text)
     await log_action(context.bot, cid, uid, uid, "set rules")
     await update.message.reply_text(sc("Rules set successfully."))
 
@@ -272,24 +241,7 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
     msg = " ".join(context.args)
-    title = update.effective_chat.title or str(cid)
-    db = get_db()
-    await db.group_configs.update_one(
-        {"group_id": cid},
-        {
-            "$set": {
-                "welcome_message": msg,
-                "title": title,
-                "updated_at": datetime.now(timezone.utc),
-            },
-            "$setOnInsert": {
-                "group_id": cid,
-                "warn_limit": 3,
-                "created_at": datetime.now(timezone.utc),
-            },
-        },
-        upsert=True,
-    )
+    await update_group_setting(cid, "welcome_message", msg)
     await log_action(context.bot, cid, uid, uid, "set welcome message")
     await update.message.reply_text(sc("Welcome message set successfully."))
 
@@ -312,84 +264,12 @@ async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sc("Usage: /setgoodbye your message here")
         )
     msg = " ".join(context.args)
-    title = update.effective_chat.title or str(cid)
-    db = get_db()
-    await db.group_configs.update_one(
-        {"group_id": cid},
-        {
-            "$set": {
-                "goodbye_message": msg,
-                "title": title,
-                "updated_at": datetime.now(timezone.utc),
-            },
-            "$setOnInsert": {
-                "group_id": cid,
-                "warn_limit": 3,
-                "created_at": datetime.now(timezone.utc),
-            },
-        },
-        upsert=True,
-    )
+    await update_group_setting(cid, "goodbye_message", msg)
     await log_action(context.bot, cid, uid, uid, "set goodbye message")
     await update.message.reply_text(sc("Goodbye message set successfully."))
 
 
-# ── /setwarnlimit ──────────────────────────────────────────────────────────────
-
-async def setwarnlimit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cid = update.effective_chat.id
-    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
-        return await update.message.reply_text(
-            sc("You need to be an admin to use this command.")
-        )
-    if not context.args:
-        return await update.message.reply_text(sc("Usage: /setwarnlimit [number]"))
-    try:
-        limit = int(context.args[0])
-        if limit < 1:
-            raise ValueError
-    except ValueError:
-        return await update.message.reply_text(
-            sc("Please provide a valid number (minimum 1).")
-        )
-    db = get_db()
-    await db.group_configs.update_one(
-        {"group_id": cid},
-        {
-            "$set": {
-                "warn_limit": limit,
-                "updated_at": datetime.now(timezone.utc),
-            },
-            "$setOnInsert": {
-                "group_id": cid,
-                "created_at": datetime.now(timezone.utc),
-            },
-        },
-        upsert=True,
-    )
-    await log_action(context.bot, cid, uid, uid, f"set warn limit to {limit}")
-    await update.message.reply_text(sc(f"Warn limit set to {limit}."))
-
-
 # ── Bot join / leave tracking ──────────────────────────────────────────────────
-
-async def _register_group(bot, chat_id: int, title: str):
-    """Upsert group into group_configs so /post can list it."""
-    db = get_db()
-    await db.group_configs.update_one(
-        {"group_id": chat_id},
-        {
-            "$set": {"title": title, "updated_at": datetime.now(timezone.utc)},
-            "$setOnInsert": {
-                "group_id": chat_id,
-                "warn_limit": 3,
-                "created_at": datetime.now(timezone.utc),
-            },
-        },
-        upsert=True,
-    )
-
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Fires when the BOT itself is added to / removed from a group."""
@@ -401,7 +281,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 
     if new_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR):
         title = chat.title or str(chat.id)
-        await _register_group(context.bot, chat.id, title)
+        await upsert_group(chat.id, title)
         print(f"Bot added to group: {title} ({chat.id})")
     elif new_status in (ChatMember.LEFT, ChatMember.BANNED):
         print(f"Bot removed from group: {chat.id}")
@@ -415,45 +295,51 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
     old_status = result.old_chat_member.status
     new_status = result.new_chat_member.status
 
-    joined = old_status in (ChatMember.LEFT, ChatMember.BANNED) and \
-        new_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    left = old_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER) and \
-        new_status in (ChatMember.LEFT, ChatMember.BANNED)
+    joined = (
+        old_status in (ChatMember.LEFT, ChatMember.BANNED)
+        and new_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER)
+    )
+    left = (
+        old_status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER)
+        and new_status in (ChatMember.LEFT, ChatMember.BANNED)
+    )
 
-    db = get_db()
-    config = await db.group_configs.find_one({"group_id": result.chat.id})
-
+    # Keep group title up-to-date
     if result.chat.title:
-        await _register_group(context.bot, result.chat.id, result.chat.title)
+        await upsert_group(result.chat.id, result.chat.title)
+
+    group = await get_group(result.chat.id)
+    settings = group.get("settings", {})
 
     def fmt(template: str, user) -> str:
-        return template.format(
-            user=f"@{user.username}" if user.username else user.first_name,
-            first_name=user.first_name,
-            last_name=user.last_name or "",
-            username=f"@{user.username}" if user.username else "",
-            group=result.chat.title,
-        )
+        try:
+            return template.format(
+                user=f"@{user.username}" if user.username else user.first_name,
+                first_name=user.first_name or "",
+                last_name=user.last_name or "",
+                username=f"@{user.username}" if user.username else "",
+                group=result.chat.title or "",
+            )
+        except (KeyError, IndexError):
+            return template  # unknown placeholder — return as-is
 
     try:
         if joined:
             user = result.new_chat_member.user
-            msg = fmt(
-                config.get("welcome_message", "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!")
-                if config else "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!",
-                user,
-            )
-            await context.bot.send_message(result.chat.id, msg)
+            template = settings.get(
+                "welcome_message",
+                "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!"
+            ) or "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ɢʀᴏᴜᴘ, {user}!"
+            await context.bot.send_message(result.chat.id, fmt(template, user))
             await log_action(context.bot, result.chat.id, user.id, 0, "joined the group")
         elif left:
             user = result.old_chat_member.user
             action = "was banned" if new_status == ChatMember.BANNED else "left the group"
-            msg = fmt(
-                config.get("goodbye_message", "ɢᴏᴏᴅʙʏᴇ, {user}!")
-                if config else "ɢᴏᴏᴅʙʏᴇ, {user}!",
-                user,
-            )
-            await context.bot.send_message(result.chat.id, msg)
+            template = settings.get(
+                "goodbye_message",
+                "ɢᴏᴏᴅʙʏᴇ, {user}!"
+            ) or "ɢᴏᴏᴅʙʏᴇ, {user}!"
+            await context.bot.send_message(result.chat.id, fmt(template, user))
             await log_action(context.bot, result.chat.id, user.id, 0, action)
     except Exception as e:
         print(f"Member update error: {e}")
@@ -462,14 +348,12 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
 # ── Registration ───────────────────────────────────────────────────────────────
 
 def register(app: Application):
-    app.add_handler(CommandHandler("start",        start))
-    app.add_handler(CommandHandler("ping",         ping))
-    app.add_handler(CommandHandler("rules",        rules))
-    app.add_handler(CommandHandler("setrules",     setrules))
-    app.add_handler(CommandHandler("setwelcome",   setwelcome))
-    app.add_handler(CommandHandler("setgoodbye",   setgoodbye))
-    app.add_handler(CommandHandler("setwarnlimit", setwarnlimit))
-    # Inline menu callbacks (pattern: "menu:<key>")
+    app.add_handler(CommandHandler("start",      start))
+    app.add_handler(CommandHandler("rules",      rules))
+    app.add_handler(CommandHandler("setrules",   setrules))
+    app.add_handler(CommandHandler("setwelcome", setwelcome))
+    app.add_handler(CommandHandler("setgoodbye", setgoodbye))
+    # Inline menu callbacks
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(
         ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)

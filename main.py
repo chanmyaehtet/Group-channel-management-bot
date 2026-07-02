@@ -12,7 +12,10 @@ from telegram.request import HTTPXRequest
 import uvicorn
 
 from database.connection import connect_db, disconnect_db
-from bot.handlers import moderation, system, broadcast, post
+from bot.handlers import (
+    moderation, system, broadcast, post,
+    controls, antispam, owner, scheduler_handler,
+)
 
 load_dotenv()
 
@@ -80,7 +83,13 @@ async def lifespan(app: FastAPI):
         .build()
     )
 
+    # Register order matters: moderation first (warn/ban), then controls
+    # (info/report/purge/id), then the rest.
     moderation.register(ptb_app)
+    controls.register(ptb_app)
+    antispam.register(ptb_app)
+    owner.register(ptb_app)
+    scheduler_handler.register(ptb_app)
     system.register(ptb_app)
     broadcast.register(ptb_app)
     post.register(ptb_app)

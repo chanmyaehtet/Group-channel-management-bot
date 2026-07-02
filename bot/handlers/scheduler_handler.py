@@ -14,23 +14,30 @@ YANGON_TZ = pytz.timezone("Asia/Yangon")
 _scheduler: AsyncIOScheduler = None
 _bot: Bot = None
 
+
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
         _scheduler = AsyncIOScheduler(timezone=YANGON_TZ)
     return _scheduler
 
+
 async def _fire_schedule(group_id: int, text: str, stype: str, schedule_id: str):
     global _bot
-    if _bot is None: return
+    if _bot is None:
+        return
     try:
         await _bot.send_message(group_id, text)
         await mark_schedule_ran(schedule_id)
         if stype == "onetime":
             await deactivate_schedule(schedule_id)
-            get_scheduler().remove_job(schedule_id)
+            try:
+                get_scheduler().remove_job(schedule_id)
+            except Exception:
+                pass
     except Exception as e:
         print(f"Schedule fire error [{schedule_id}]: {e}")
+
 
 async def load_schedules_from_db(bot: Bot):
     global _bot
@@ -44,8 +51,10 @@ async def load_schedules_from_db(bot: Bot):
         if s["type"] == "onetime":
             now = datetime.now(YANGON_TZ)
             fire_time = YANGON_TZ.localize(datetime(now.year, now.month, now.day, h, m))
-            if fire_time <= now: continue  # already past
-            trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ, end_date=fire_time)
+            if fire_time <= now:
+                continue  # already past
+            trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ,
+                                  end_date=datetime(2099, 12, 31, tzinfo=YANGON_TZ))
         else:
             trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ)
         scheduler.add_job(_fire_schedule, trigger=trigger, id=sid,
@@ -55,6 +64,7 @@ async def load_schedules_from_db(bot: Bot):
     if not scheduler.running:
         scheduler.start()
     print(f"✅ Scheduler started — {len(schedules)} job(s) loaded")
+
 
 async def setschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if await blacklist_check(update, ctx): return
@@ -77,20 +87,25 @@ async def setschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         parts = time_str.split(":")
         h, m = int(parts[0]), int(parts[1])
-        if not (0 <= h <= 23 and 0 <= m <= 59): raise ValueError
-    except:
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError
+    except (ValueError, IndexError):
         return await update.message.reply_text(sc("Invalid time. Use HH:MM format (e.g. 08:00)."))
     text = " ".join(ctx.args[2:])
-    if not text: return await update.message.reply_text(sc("Please provide message text."))
+    if not text:
+        return await update.message.reply_text(sc("Please provide message text."))
 
     sid = await add_schedule(cid, uid, stype, time_str, text)
-    trigger = (CronTrigger(hour=h, minute=m, timezone=YANGON_TZ) if stype == "always"
-               else CronTrigger(hour=h, minute=m, timezone=YANGON_TZ,
-                                end_date=datetime(2099, 12, 31, tzinfo=YANGON_TZ)))
+    trigger = (
+        CronTrigger(hour=h, minute=m, timezone=YANGON_TZ)
+        if stype == "always"
+        else CronTrigger(hour=h, minute=m, timezone=YANGON_TZ,
+                         end_date=datetime(2099, 12, 31, tzinfo=YANGON_TZ))
+    )
     get_scheduler().add_job(_fire_schedule, trigger=trigger, id=sid,
-                             kwargs={"group_id": cid, "text": text,
-                                     "stype": stype, "schedule_id": sid},
-                             replace_existing=True)
+                            kwargs={"group_id": cid, "text": text,
+                                    "stype": stype, "schedule_id": sid},
+                            replace_existing=True)
     await update.message.reply_text(
         f"⏰ *{sc('Schedule set')}*\n"
         f"🕐 {sc('Time')}: *{time_str}* (Yangon)\n"
@@ -98,5 +113,63 @@ async def setschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📝 {sc('Message')}: {text}",
         parse_mode="Markdown")
 
+
+async def listschedules(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if await blacklist_check(update, ctx): return
+    uid, cid = update.effective_user.id, update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use in a group."))
+    if not is_owner(uid) and not await is_admin(ctx.bot, cid, uid):
+        return await update.message.reply_text(sc("Admins only."))
+    all_schedules = await get_active_schedules()
+    group_schedules = [s for s in all_schedules if s["group_id"] == cid]
+    if not group_schedules:
+        return await update.message.reply_text(sc("No active schedules for this group."))
+    lines = [f"⏰ *{sc('Active Schedules')}* ({len(group_schedules)})\n━━━━━━━━━━━━"]
+    for s in group_schedules:
+        sid_short = str(s["_id"])[:8]
+        stype     = sc(s["type"])
+        preview   = s["text"][:40] + ("…" if len(s["text"]) > 40 else "")
+        lines.append(f"• `{sid_short}` — *{s['time']}* ({stype})\n  _{preview}_")
+    lines.append(f"\n_{sc('Use /delschedule <id_prefix> to remove')}_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def delschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if await blacklist_check(update, ctx): return
+    uid, cid = update.effective_user.id, update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use in a group."))
+    if not is_owner(uid) and not await is_admin(ctx.bot, cid, uid):
+        return await update.message.reply_text(sc("Admins only."))
+    if not ctx.args:
+        return await update.message.reply_text(
+            f"{sc('Usage')}: `/delschedule <id_prefix>`\n"
+            f"_{sc('Get the ID from /listschedules')}_",
+            parse_mode="Markdown")
+    sid_prefix = ctx.args[0].lower()
+    all_schedules = await get_active_schedules()
+    group_schedules = [s for s in all_schedules if s["group_id"] == cid]
+    match = next(
+        (s for s in group_schedules if str(s["_id"]).startswith(sid_prefix)),
+        None
+    )
+    if not match:
+        return await update.message.reply_text(
+            sc("Schedule not found. Use /listschedules to see IDs."))
+    full_sid = str(match["_id"])
+    await deactivate_schedule(full_sid)
+    try:
+        get_scheduler().remove_job(full_sid)
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"✅ {sc('Schedule removed.')}\n"
+        f"🕐 *{match['time']}* ({sc(match['type'])})",
+        parse_mode="Markdown")
+
+
 def register(app: Application):
-    app.add_handler(CommandHandler("setschedule", setschedule))
+    app.add_handler(CommandHandler("setschedule",  setschedule))
+    app.add_handler(CommandHandler("listschedules", listschedules))
+    app.add_handler(CommandHandler("delschedule",  delschedule))

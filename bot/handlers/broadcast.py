@@ -1,37 +1,9 @@
 import asyncio
-from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from bot.utils import sc, is_owner
-from database.connection import get_db
-
-
-def _validate_group_id(target: str):
-    """
-    Returns (group_id, error_message).
-    Valid Telegram group/channel IDs are negative integers.
-    Supergroup/channel IDs start with -100.
-    """
-    try:
-        gid = int(target)
-    except ValueError:
-        return None, (
-            f"❌ *{sc('Invalid format')}*\n\n"
-            f"{sc('Group ID must be a number.')}\n"
-            f"{sc('Example')}: `/broadcast -1001234567890 Hello`"
-        )
-    if gid > 0:
-        return None, (
-            f"❌ *{sc('Invalid Group ID')}*: `{gid}`\n\n"
-            f"⚠️ {sc('Positive numbers are user IDs, not group IDs.')}\n\n"
-            f"💡 *{sc('Hint')}:*\n"
-            f"• {sc('Group/supergroup IDs are')} *{sc('negative')}* {sc('numbers')}\n"
-            f"• {sc('Supergroup format')}: `-100xxxxxxxxxx`\n"
-            f"• {sc('Basic group format')}: `-xxxxxxx`\n\n"
-            f"{sc('Use')} `/broadcast all` {sc('to send to all registered groups.')}"
-        )
-    return gid, None
+from database.models import get_all_groups, add_log
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -54,11 +26,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target = args[0]
     text = " ".join(args[1:])
-    db = get_db()
 
     if target.lower() == "all":
-        configs = await db.group_configs.find({}, {"group_id": 1}).to_list(length=None)
-        group_ids = [c["group_id"] for c in configs]
+        groups = await get_all_groups()
+        group_ids = [g["group_id"] for g in groups]
         if not group_ids:
             return await update.message.reply_text(sc("No groups found in database."))
 
@@ -76,11 +47,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 failed += 1
                 print(f"Broadcast failed {gid}: {e}")
 
-        await db.moderation_logs.insert_one({
-            "group_id": 0, "user_id": 0, "admin_id": uid,
-            "action": f"broadcast all ({success} ok, {failed} failed)",
-            "created_at": datetime.now(timezone.utc),
-        })
+        await add_log(0, 0, uid, f"broadcast all ({success} ok, {failed} failed)")
         await status_msg.edit_text(
             f"✅ *{sc('Broadcast Complete')}*\n"
             f"━━━━━━━━━━━━\n"
@@ -91,17 +58,25 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     else:
-        group_id, error = _validate_group_id(target)
-        if error:
-            return await update.message.reply_text(error, parse_mode="Markdown")
-
+        try:
+            group_id = int(target)
+        except ValueError:
+            return await update.message.reply_text(
+                f"❌ *{sc('Invalid format')}*\n\n"
+                f"{sc('Group ID must be a number.')}\n"
+                f"{sc('Example')}: `/broadcast -1001234567890 Hello`",
+                parse_mode="Markdown",
+            )
+        if group_id > 0:
+            return await update.message.reply_text(
+                f"❌ *{sc('Invalid Group ID')}*: `{group_id}`\n\n"
+                f"⚠️ {sc('Positive numbers are user IDs, not group IDs.')}\n"
+                f"💡 {sc('Supergroup format')}: `-100xxxxxxxxxx`",
+                parse_mode="Markdown",
+            )
         try:
             await context.bot.send_message(group_id, text)
-            await db.moderation_logs.insert_one({
-                "group_id": group_id, "user_id": 0, "admin_id": uid,
-                "action": "broadcast single",
-                "created_at": datetime.now(timezone.utc),
-            })
+            await add_log(group_id, 0, uid, "broadcast single")
             await update.message.reply_text(
                 f"✅ *{sc('Message Sent')}*\n"
                 f"📍 {sc('Group ID')}: `{group_id}`",
@@ -114,10 +89,9 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 hint = (
                     f"\n\n💡 *{sc('Possible reasons')}:*\n"
                     f"• {sc('Bot is not a member of this group')}\n"
-                    f"• {sc('Group ID is incorrect')}\n"
-                    f"• {sc('Group was deleted or is private')}"
+                    f"• {sc('Group ID is incorrect')}"
                 )
-            elif "bot was kicked" in err_str or "forbidden" in err_str:
+            elif "forbidden" in err_str or "kicked" in err_str:
                 hint = f"\n\n💡 {sc('The bot was removed from this group.')}"
             await update.message.reply_text(
                 f"❌ *{sc('Failed')}*: `{e}`{hint}",
