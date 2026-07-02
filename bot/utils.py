@@ -43,7 +43,9 @@ async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: return int(raw), None
         except ValueError:
             try:
-                u = await context.bot.get_chat(raw)
+                # Telegram API requires @ prefix for username lookups
+                lookup = raw if raw.startswith("@") else f"@{raw}"
+                u = await context.bot.get_chat(lookup)
                 return u.id, u
             except: pass
     return None, None
@@ -58,7 +60,9 @@ async def get_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try: return int(raw)
         except ValueError:
             try:
-                u = await context.bot.get_chat(raw)
+                # Telegram API requires @ prefix for username lookups
+                lookup = raw if raw.startswith("@") else f"@{raw}"
+                u = await context.bot.get_chat(lookup)
                 return u.id
             except: pass
     return None

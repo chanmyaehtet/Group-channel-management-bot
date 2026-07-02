@@ -24,9 +24,19 @@ async def upsert_group(group_id: int, title: str = None) -> None:
     await db.groups.update_one({"group_id": group_id}, update, upsert=True)
 
 async def update_group_setting(group_id: int, key: str, value) -> None:
+    """Update a single settings field. On first-ever insert, seeds all defaults."""
     db = get_db()
-    await db.groups.update_one({"group_id": group_id},
-        {"$set": {f"settings.{key}": value, "last_activity": _now()}}, upsert=True)
+    defaults = _default_settings()
+    defaults[key] = value          # override the one we're changing
+    set_on_insert = {"group_id": group_id, "added_at": _now(), "settings": defaults}
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {
+            "$set":         {f"settings.{key}": value, "last_activity": _now()},
+            "$setOnInsert": set_on_insert,
+        },
+        upsert=True,
+    )
 
 async def get_all_groups() -> list:
     db = get_db()
