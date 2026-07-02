@@ -1,9 +1,18 @@
+"""
+Group control & info commands.
+
+Group-only: /lock /unlock /pin /unpin /promote /demote /purge /report
+Group + PM: /info /id
+
+/info in PM: shows public profile info (no group-member status)
+/id   in PM: shows own ID, or lookup @username / user_id
+"""
 import asyncio
 from telegram import Update, ChatMember, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import BadRequest, TelegramError
 
-from bot.utils import sc, is_admin, is_owner, bot_is_admin, check_cooldown, get_target_user_id, log_action
+from bot.utils import sc, md_escape, is_admin, is_owner, bot_is_admin, check_cooldown, get_target_user_id, log_action
 from database.connection import get_db
 from database.models import update_group_setting, count_warnings
 
@@ -28,6 +37,8 @@ def _group_only_keyboard(bot_username: str) -> InlineKeyboardMarkup:
     ]])
 
 
+# ── /lock ──────────────────────────────────────────────────────────────────────
+
 async def lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         return await update.message.reply_text(
@@ -48,6 +59,8 @@ async def lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (BadRequest, TelegramError) as e:
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
+
+# ── /unlock ────────────────────────────────────────────────────────────────────
 
 async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -70,6 +83,8 @@ async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
 
+# ── /pin ───────────────────────────────────────────────────────────────────────
+
 async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         return await update.message.reply_text(
@@ -85,12 +100,16 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return await update.message.reply_text(sc("Reply to a message to pin it."))
     try:
-        await context.bot.pin_chat_message(cid, update.message.reply_to_message.message_id, disable_notification=False)
+        await context.bot.pin_chat_message(
+            cid, update.message.reply_to_message.message_id, disable_notification=False
+        )
         await log_action(context.bot, cid, uid, uid, "pinned a message")
         await update.message.reply_text("📌 " + sc("Message pinned."))
     except (BadRequest, TelegramError) as e:
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
+
+# ── /unpin ─────────────────────────────────────────────────────────────────────
 
 async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -115,6 +134,8 @@ async def unpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
 
+# ── /promote ───────────────────────────────────────────────────────────────────
+
 async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         return await update.message.reply_text(
@@ -130,7 +151,6 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = await get_target_user_id(update, context)
     if not target:
         return await update.message.reply_text(sc("Reply to a message or provide a user ID."))
-    # If targeting by reply, title starts at args[0]; if by ID/username, at args[1]
     _t_start = 0 if update.message.reply_to_message else 1
     title = " ".join(context.args[_t_start:]) if context.args and len(context.args) > _t_start else ""
     try:
@@ -141,12 +161,17 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if title:
             await context.bot.set_chat_administrator_custom_title(cid, target, title)
-        await log_action(context.bot, cid, target, uid, f"promoted" + (f" as '{title}'" if title else ""))
+        await log_action(
+            context.bot, cid, target, uid,
+            f"promoted" + (f" as '{title}'" if title else "")
+        )
         suffix = f" ({sc('title')}: {title})" if title else ""
         await update.message.reply_text("⭐ " + sc("User promoted to admin.") + suffix)
     except (BadRequest, TelegramError) as e:
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
+
+# ── /demote ────────────────────────────────────────────────────────────────────
 
 async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -175,46 +200,71 @@ async def demote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
 
+# ── /info — works in GROUP and PM ─────────────────────────────────────────────
+# Group: /info or reply or /info @username
+# PM:    /info <user_id or @username>  (no group-member status — public profile only)
+
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        return await update.message.reply_text(
-            sc("This command only works in groups."),
-            reply_markup=_group_only_keyboard(context.bot.username)
-        )
     if not check_cooldown(update.effective_user.id, "info"):
         return await update.message.reply_text(sc("Please wait before using this command again."))
+
+    is_pm = update.effective_chat.type == "private"
     cid = update.effective_chat.id
+
     target = await get_target_user_id(update, context)
     if not target:
         target = update.effective_user.id
+
     try:
         user = await context.bot.get_chat(target)
-        member = await context.bot.get_chat_member(cid, target)
-        warn_count = await count_warnings(cid, target)
-        status_map = {
-            ChatMember.OWNER:         sc("Owner"),
-            ChatMember.ADMINISTRATOR: sc("Admin"),
-            ChatMember.MEMBER:        sc("Member"),
-            ChatMember.RESTRICTED:    sc("Restricted"),
-            ChatMember.LEFT:          sc("Left"),
-            ChatMember.BANNED:        sc("Banned"),
-        }
-        status = status_map.get(member.status, sc("Unknown"))
-        uname  = f"@{user.username}" if user.username else sc("None")
-        name   = sc((user.first_name or "") + (" " + user.last_name if user.last_name else "")).strip()
-        text = (
-            f"👤 *{sc('User Info')}*\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🆔 *{sc('ID')}:* `{user.id}`\n"
-            f"👤 *{sc('Name')}:* {name}\n"
-            f"📛 *{sc('Username')}:* {uname}\n"
-            f"🔰 *{sc('Status')}:* {status}\n"
-            f"⚠️ *{sc('Warnings')}:* {warn_count}\n"
-        )
+
+        # BUG FIX: escape all user-supplied strings before embedding in Markdown
+        raw_name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
+        name  = md_escape(sc(raw_name.strip()))
+        uname = f"@{md_escape(user.username)}" if user.username else sc("None")
+
+        if is_pm:
+            # In PM: no chat_member query possible — show public profile only
+            warn_count = 0  # cannot query group warnings without group context
+            text = (
+                f"👤 *{sc('User Info')}*\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🆔 *{sc('ID')}:* `{user.id}`\n"
+                f"👤 *{sc('Name')}:* {name}\n"
+                f"📛 *{sc('Username')}:* {uname}\n"
+                f"💬 *{sc('Bio')}:* {md_escape(user.bio or sc('None'))}\n"
+            )
+        else:
+            member = await context.bot.get_chat_member(cid, target)
+            warn_count = await count_warnings(cid, target)
+            status_map = {
+                ChatMember.OWNER:         sc("Owner"),
+                ChatMember.ADMINISTRATOR: sc("Admin"),
+                ChatMember.MEMBER:        sc("Member"),
+                ChatMember.RESTRICTED:    sc("Restricted"),
+                ChatMember.LEFT:          sc("Left"),
+                ChatMember.BANNED:        sc("Banned"),
+            }
+            status = status_map.get(member.status, sc("Unknown"))
+            text = (
+                f"👤 *{sc('User Info')}*\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"🆔 *{sc('ID')}:* `{user.id}`\n"
+                f"👤 *{sc('Name')}:* {name}\n"
+                f"📛 *{sc('Username')}:* {uname}\n"
+                f"🔰 *{sc('Status')}:* {status}\n"
+                f"⚠️ *{sc('Warnings')}:* {warn_count}\n"
+            )
+
         await update.message.reply_text(text, parse_mode="Markdown")
+
     except (BadRequest, TelegramError) as e:
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
+    except Exception as e:
+        await update.message.reply_text(f"{sc('Error')}: {e}")
 
+
+# ── /report ────────────────────────────────────────────────────────────────────
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -233,27 +283,33 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         admins = await context.bot.get_chat_administrators(cid)
         admin_mentions = " ".join(
-            f"[{sc(a.user.first_name)}](tg://user?id={a.user.id})"
+            f"[{md_escape(sc(a.user.first_name))}](tg://user?id={a.user.id})"
             for a in admins if not a.user.is_bot
         )
         if not admin_mentions:
             admin_mentions = sc("(no admins to mention)")
-        reporter_link = f"[{sc(reporter.first_name)}](tg://user?id={reporter.id})"
+        reporter_link = f"[{md_escape(sc(reporter.first_name))}](tg://user?id={reporter.id})"
         reported_name = reported_user.first_name if reported_user else "?"
-        reported_link = f"[{sc(reported_name)}](tg://user?id={reported_user.id if reported_user else 0})"
+        reported_link = f"[{md_escape(sc(reported_name))}](tg://user?id={reported_user.id if reported_user else 0})"
         text = (
             f"🚨 *{sc('Report')}*\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"👤 *{sc('Reported by')}:* {reporter_link}\n"
             f"🎯 *{sc('Reported user')}:* {reported_link}\n"
-            f"📝 *{sc('Reason')}:* {sc(reason)}\n\n"
+            f"📝 *{sc('Reason')}:* {md_escape(sc(reason))}\n\n"
             f"📣 {sc('Admins')}: {admin_mentions}"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
-        await log_action(context.bot, cid, reported_user.id if reported_user else 0, reporter.id, f"reported: {reason}")
+        await log_action(
+            context.bot, cid,
+            reported_user.id if reported_user else 0,
+            reporter.id, f"reported: {reason}"
+        )
     except (BadRequest, TelegramError) as e:
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
+
+# ── /purge ─────────────────────────────────────────────────────────────────────
 
 async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
@@ -296,17 +352,24 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{sc('Error')}: {e.message}")
 
 
+# ── /id — works in GROUP and PM ───────────────────────────────────────────────
+# Group: /id / reply / /id @username
+# PM:    /id [user_id or @username]  — own ID if no arg
+
 async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Telegram ID of self, a replied-to user, or a username lookup."""
     if not check_cooldown(update.effective_user.id, "id"):
         return await update.message.reply_text(sc("Please wait before using this command again."))
+
     target = await get_target_user_id(update, context)
     chat   = update.effective_chat
+
     if target and target != update.effective_user.id:
         try:
-            user = await context.bot.get_chat(target)
-            name  = sc((user.first_name or "") + (" " + user.last_name if user.last_name else "")).strip()
-            uname = f"@{user.username}" if user.username else sc("No username")
+            user  = await context.bot.get_chat(target)
+            # BUG FIX: escape special chars before embedding in Markdown
+            raw   = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
+            name  = md_escape(sc(raw.strip()))
+            uname = f"@{md_escape(user.username)}" if user.username else sc("No username")
             await update.message.reply_text(
                 f"👤 *{name}*\n🆔 `{target}`\n📛 {uname}",
                 parse_mode="Markdown"
@@ -315,14 +378,17 @@ async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🆔 `{target}`", parse_mode="Markdown")
     else:
         user  = update.effective_user
-        name  = sc((user.first_name or "") + (" " + user.last_name if user.last_name else "")).strip()
-        uname = f"@{user.username}" if user.username else sc("No username")
+        raw   = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
+        name  = md_escape(sc(raw.strip()))
+        uname = f"@{md_escape(user.username)}" if user.username else sc("No username")
         lines = [f"👤 *{name}*\n🆔 `{user.id}`\n📛 {uname}"]
         if chat.type != "private":
-            gname = sc(chat.title or "Group")
+            gname = md_escape(sc(chat.title or "Group"))
             lines.append(f"\n👥 *{gname}*\n🆔 `{chat.id}`")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+
+# ── Registration ───────────────────────────────────────────────────────────────
 
 def register(app: Application):
     app.add_handler(CommandHandler("lock",    lock))

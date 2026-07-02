@@ -53,10 +53,8 @@ def build_request() -> HTTPXRequest:
 
 
 async def _keep_alive_loop():
-    """Ping own health endpoint every 14 min to prevent Render free-tier sleep.
-    Uses RENDER_EXTERNAL_URL (auto-set by Render) if available, else localhost:{PORT}.
-    """
-    await asyncio.sleep(30)  # wait for server to be fully ready
+    """Ping own health endpoint every 14 min to prevent Render free-tier sleep."""
+    await asyncio.sleep(30)
     ping_url = f"{RENDER_EXTERNAL_URL}/ping" if RENDER_EXTERNAL_URL else f"http://localhost:{PORT}/ping"
     log(f"🏓 Keep-alive target: {ping_url}")
     while True:
@@ -66,7 +64,7 @@ async def _keep_alive_loop():
                 log(f"🏓 Keep-alive ping: {r.status_code}")
         except Exception as e:
             log(f"⚠️  Keep-alive ping failed: {e}")
-        await asyncio.sleep(14 * 60)  # 14 minutes
+        await asyncio.sleep(14 * 60)
 
 
 @asynccontextmanager
@@ -83,22 +81,21 @@ async def lifespan(app: FastAPI):
         .build()
     )
 
-    # Register order matters: moderation first (warn/ban), then controls
-    # (info/report/purge/id), then the rest.
+    # Registration order matters:
+    # moderation first (warn/ban), then controls (info/report/purge/id), then the rest.
     moderation.register(ptb_app)
     controls.register(ptb_app)
     antispam.register(ptb_app)
     cleaner.register(ptb_app)
-    owner.register(ptb_app)
+    owner.register(ptb_app)       # registers /broadcast (owner-only)
     scheduler_handler.register(ptb_app)
     system.register(ptb_app)
-    broadcast.register(ptb_app)
+    broadcast.register(ptb_app)   # BUG FIX: no-op now — /broadcast handled by owner.py
     post.register(ptb_app)
 
     await ptb_app.initialize()
     await ptb_app.start()
 
-    # Load persisted schedules and start the APScheduler instance
     await scheduler_handler.load_schedules_from_db(ptb_app.bot)
 
     me = await ptb_app.bot.get_me()
@@ -132,8 +129,7 @@ async def lifespan(app: FastAPI):
         _keep_alive_task.cancel()
     try:
         # Do NOT delete_webhook() here — Render free tier shuts down on idle,
-        # and deleting the webhook creates a dead cycle where Telegram has no
-        # URL to call, so the service never wakes up again.
+        # deleting the webhook creates a dead cycle.
         await ptb_app.stop()
         await ptb_app.shutdown()
     except Exception:

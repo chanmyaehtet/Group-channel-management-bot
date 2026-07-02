@@ -1,40 +1,61 @@
+"""
+Moderation commands: /kick /ban /unban /mute /unmute /warn /unwarn /warnings /setwarnlimit
+
+Group commands: kick, ban, unban, mute, unmute, warn, setwarnlimit
+PM + Group commands: unwarn, warnings (with user_id arg in PM)
+"""
 from telegram import Update, ChatMember, ChatPermissions
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import BadRequest, TelegramError
-from bot.utils import sc, is_admin, is_owner, bot_is_admin, check_cooldown, resolve_target
+from bot.utils import sc, md_escape, is_admin, is_owner, bot_is_admin, check_cooldown, resolve_target
 from bot.middleware import blacklist_check
 from database.models import (add_warning, remove_last_warning, count_warnings,
-                               get_warnings, clear_warnings, get_group, add_log)
+                               get_warnings, clear_warnings, get_group, add_log,
+                               update_group_setting)
 
-def _guard(func):
+
+# ── Guards ─────────────────────────────────────────────────────────────────────
+
+def _group_guard(func):
+    """Requires group chat + cooldown + blacklist check."""
     async def wrapper(update: Update, ctx):
         if await blacklist_check(update, ctx): return
-        uid, cid = update.effective_user.id, update.effective_chat.id
         if update.effective_chat.type == "private":
-            return await update.message.reply_text(sc("Use this command in a group."))
+            return await update.message.reply_text(
+                sc("This command only works in a group chat.")
+            )
+        uid = update.effective_user.id
         if not check_cooldown(uid, func.__name__): return
         return await func(update, ctx)
     wrapper.__name__ = func.__name__
     return wrapper
 
+
 async def _require_admin(update, ctx):
     uid, cid = update.effective_user.id, update.effective_chat.id
     if is_owner(uid): return True
     if await is_admin(ctx.bot, cid, uid): return True
-    await update.message.reply_text(sc("You need to be an admin."))
+    await update.message.reply_text(sc("You need to be an admin to use this command."))
     return False
+
 
 async def _require_bot_admin(update, ctx):
     if await bot_is_admin(ctx.bot, update.effective_chat.id): return True
     await update.message.reply_text(sc("I need admin rights to do that."))
     return False
 
-@_guard
+
+# ── /kick ──────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def kick(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply to a message or provide a user ID."))
+    if not tid:
+        return await update.message.reply_text(
+            sc("Reply to a message or provide a user ID / @username.")
+        )
     cid = update.effective_chat.id
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
@@ -44,14 +65,21 @@ async def kick(update: Update, ctx):
         await ctx.bot.unban_chat_member(cid, tid)
         await add_log(cid, tid, update.effective_user.id, "kick")
         await update.message.reply_text(f"👢 {sc('User kicked.')}")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /ban ───────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def ban(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply to a message or provide a user ID."))
+    if not tid:
+        return await update.message.reply_text(
+            sc("Reply to a message or provide a user ID / @username.")
+        )
     cid = update.effective_chat.id
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
@@ -63,29 +91,39 @@ async def ban(update: Update, ctx):
             except: pass
         await add_log(cid, tid, update.effective_user.id, "ban")
         await update.message.reply_text(f"🔨 {sc('User banned.')}")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /unban ─────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def unban(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
+    if not tid:
+        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
     try:
         await ctx.bot.unban_chat_member(update.effective_chat.id, tid, only_if_banned=True)
         await add_log(update.effective_chat.id, tid, update.effective_user.id, "unban")
         await update.message.reply_text(f"✅ {sc('User unbanned.')}")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /mute ──────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def mute(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
+    if not tid:
+        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
     cid = update.effective_chat.id
-    duration = None
-    # If targeting by reply, duration is ctx.args[0]; if by ID/username, it's ctx.args[1]
+    # Duration arg index depends on whether target was reply (arg[0]) or explicit (arg[1])
     _dur_idx = 0 if update.message.reply_to_message else 1
+    duration = None
     if ctx.args and len(ctx.args) > _dur_idx:
         try: duration = int(ctx.args[_dur_idx])
         except: pass
@@ -97,20 +135,27 @@ async def mute(update: Update, ctx):
         if duration:
             from datetime import datetime, timezone, timedelta
             until = datetime.now(timezone.utc) + timedelta(seconds=duration)
-        await ctx.bot.restrict_chat_member(cid, tid, ChatPermissions(can_send_messages=False), until_date=until)
+        await ctx.bot.restrict_chat_member(
+            cid, tid, ChatPermissions(can_send_messages=False), until_date=until
+        )
         dur_txt = f" {sc('for')} {duration}s" if duration else ""
         await add_log(cid, tid, update.effective_user.id, "mute", {"duration": duration})
         await update.message.reply_text(f"🔇 {sc('User muted')}{dur_txt}.")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /unmute ────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def unmute(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
+    if not tid:
+        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
     try:
-        # Restore all permissions — includes Bot API 6.5+ granular fields
-        await ctx.bot.restrict_chat_member(update.effective_chat.id, tid,
+        await ctx.bot.restrict_chat_member(
+            update.effective_chat.id, tid,
             ChatPermissions(
                 can_send_messages=True,
                 can_send_audios=True,
@@ -123,19 +168,24 @@ async def unmute(update: Update, ctx):
                 can_send_other_messages=True,
                 can_add_web_page_previews=True,
                 can_invite_users=True,
-            ))
+            )
+        )
         await add_log(update.effective_chat.id, tid, update.effective_user.id, "unmute")
         await update.message.reply_text(f"🔊 {sc('User unmuted.')}")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /warn ──────────────────────────────────────────────────────────────────────
+
+@_group_guard
 async def warn(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
+    if not tid:
+        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
     cid = update.effective_chat.id
-    # If targeting by reply, reason starts at args[0]; if by ID/username, at args[1]
     _r_start = 0 if update.message.reply_to_message else 1
     reason = " ".join(ctx.args[_r_start:]) if ctx.args and len(ctx.args) > _r_start else None
     try:
@@ -151,50 +201,123 @@ async def warn(update: Update, ctx):
             await clear_warnings(cid, tid)
             await add_log(cid, tid, update.effective_user.id, "auto-ban")
             return await update.message.reply_text(
-                f"🔨 {sc('User reached')} {count}/{limit} {sc('warnings — auto-banned.')}")
-        r_txt = f"\n📝 {sc('Reason')}: {reason}" if reason else ""
+                f"🔨 {sc('User reached')} {count}/{limit} {sc('warnings — auto-banned.')}"
+            )
+        r_txt = f"\n📝 {sc('Reason')}: {md_escape(reason)}" if reason else ""
         await update.message.reply_text(f"⚠️ {sc('Warning')} {count}/{limit}{r_txt}")
-    except TelegramError as e: await update.message.reply_text(f"❌ {e.message}")
+    except TelegramError as e:
+        await update.message.reply_text(f"❌ {e.message}")
 
-@_guard
+
+# ── /unwarn — works in group AND PM ───────────────────────────────────────────
+# PM usage: /unwarn <user_id> <group_id>
+
 async def unwarn(update: Update, ctx):
-    if not await _require_admin(update, ctx): return
-    tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
-    ok = await remove_last_warning(update.effective_chat.id, tid)
-    remaining = await count_warnings(update.effective_chat.id, tid)
-    if ok: await update.message.reply_text(f"✅ {sc('Warning removed. Remaining:')} {remaining}")
-    else:  await update.message.reply_text(sc("No warnings to remove."))
+    if await blacklist_check(update, ctx): return
+    uid = update.effective_user.id
 
-@_guard
+    if update.effective_chat.type == "private":
+        # PM: /unwarn <user_id> <group_id>
+        if not ctx.args or len(ctx.args) < 2:
+            return await update.message.reply_text(
+                f"*{sc('PM Usage')}:* `/unwarn <user_id> <group_id>`",
+                parse_mode="Markdown"
+            )
+        try:
+            tid  = int(ctx.args[0])
+            cid  = int(ctx.args[1])
+        except ValueError:
+            return await update.message.reply_text(sc("Provide numeric user_id and group_id."))
+        if not is_owner(uid) and not await is_admin(ctx.bot, cid, uid):
+            return await update.message.reply_text(sc("You need to be an admin of that group."))
+    else:
+        cid = update.effective_chat.id
+        if not is_owner(uid) and not await is_admin(ctx.bot, cid, uid):
+            return await update.message.reply_text(sc("You need to be an admin."))
+        tid, _ = await resolve_target(update, ctx)
+        if not tid:
+            return await update.message.reply_text(sc("Reply or provide user ID."))
+
+    ok = await remove_last_warning(cid, tid)
+    remaining = await count_warnings(cid, tid)
+    if ok:
+        await update.message.reply_text(
+            f"✅ {sc('Warning removed.')} {sc('Remaining:')} {remaining}"
+        )
+    else:
+        await update.message.reply_text(sc("No warnings to remove."))
+
+
+# ── /warnings — works in group AND PM ─────────────────────────────────────────
+# PM usage: /warnings <user_id> <group_id>
+
 async def warnings_cmd(update: Update, ctx):
-    tid, _ = await resolve_target(update, ctx)
-    if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
-    cid = update.effective_chat.id
+    if await blacklist_check(update, ctx): return
+    uid = update.effective_user.id
+
+    if update.effective_chat.type == "private":
+        # PM: /warnings <user_id> <group_id>
+        if not ctx.args or len(ctx.args) < 2:
+            return await update.message.reply_text(
+                f"*{sc('PM Usage')}:* `/warnings <user_id> <group_id>`\n"
+                f"_{sc('Or use this command inside the group directly.')}_",
+                parse_mode="Markdown"
+            )
+        try:
+            tid = int(ctx.args[0])
+            cid = int(ctx.args[1])
+        except ValueError:
+            return await update.message.reply_text(sc("Provide numeric user_id and group_id."))
+        if not is_owner(uid) and not await is_admin(ctx.bot, cid, uid):
+            return await update.message.reply_text(sc("You need to be an admin of that group."))
+    else:
+        cid = update.effective_chat.id
+        tid, _ = await resolve_target(update, ctx)
+        if not tid:
+            return await update.message.reply_text(sc("Reply or provide user ID."))
+
     g = await get_group(cid)
     limit = g.get("settings", {}).get("warn_limit", 3)
     warns = await get_warnings(cid, tid)
-    if not warns: return await update.message.reply_text(sc("No warnings for this user."))
-    try: u = await ctx.bot.get_chat(tid); name = sc(u.first_name or str(tid))
-    except: name = str(tid)
+    if not warns:
+        return await update.message.reply_text(sc("No warnings for this user."))
+
+    try:
+        u = await ctx.bot.get_chat(tid)
+        # BUG FIX: escape special Markdown chars in user's name
+        raw_name = u.first_name or str(tid)
+        name = md_escape(sc(raw_name))
+    except:
+        name = str(tid)
+
     lines = [f"⚠️ *{sc('Warnings for')} {name}* ({len(warns)}/{limit})\n━━━━━━━━━━━━"]
     for i, w in enumerate(warns, 1):
         t = w["created_at"].strftime("%Y-%m-%d")
-        r = f": {w['reason']}" if w.get("reason") else ""
+        # BUG FIX: escape reason text too
+        r = f": {md_escape(w['reason'])}" if w.get("reason") else ""
         lines.append(f"{i}. {t}{r}")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-@_guard
+
+# ── /setwarnlimit ──────────────────────────────────────────────────────────────
+
+@_group_guard
 async def setwarnlimit(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not ctx.args:
         return await update.message.reply_text(sc("Usage: /setwarnlimit <number>"))
-    try: limit = int(ctx.args[0])
-    except: return await update.message.reply_text(sc("Provide a valid number."))
-    if limit < 1: return await update.message.reply_text(sc("Minimum is 1."))
-    from database.models import update_group_setting
+    try:
+        limit = int(ctx.args[0])
+    except:
+        return await update.message.reply_text(sc("Provide a valid number."))
+    if limit < 1:
+        return await update.message.reply_text(sc("Minimum is 1."))
     await update_group_setting(update.effective_chat.id, "warn_limit", limit)
     await update.message.reply_text(f"✅ {sc('Warn limit set to')} {limit}.")
+
+
+# ── Registration ───────────────────────────────────────────────────────────────
 
 def register(app: Application):
     for cmd, func in [

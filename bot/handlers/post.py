@@ -1,8 +1,13 @@
 """
-/post — Multi-step post creation wizard (private chat, owner-only).
+/post — Multi-step post creation wizard.
+
+Access:
+  - Bot OWNER: can post to ANY registered group.
+  - Group ADMIN: can post ONLY to groups where they are an admin.
+  - Regular users: not allowed.
 
 Flow:
-  /post
+  /post  (PM or group)
     └── TYPING_MESSAGE   ← user types the post text
         └── CONFIRM_MESSAGE  ← ✅ Confirm / ❌ Cancel
             └── BUTTON_CHOICE  ← ➕ Add Button / ⏭️ Skip
@@ -29,7 +34,7 @@ Flow:
 
 from datetime import datetime, timezone
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -41,7 +46,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from bot.utils import sc, is_owner
+from bot.utils import sc, is_owner, is_admin
 from database.connection import get_db
 from database.models import get_all_groups
 
@@ -81,22 +86,39 @@ async def _nudge(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _get_accessible_groups(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> list:
+    """
+    Owner  → all registered groups.
+    Admin  → only groups where user is an admin.
+    Others → empty list (blocked at entry).
+    """
+    groups = await get_all_groups()
+    if is_owner(user_id):
+        return groups
+
+    accessible = []
+    for g in groups:
+        try:
+            member = await context.bot.get_chat_member(g["group_id"], user_id)
+            if member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+                accessible.append(g)
+        except Exception:
+            pass
+    return accessible
+
+
 async def _show_group_select(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    """Render the group-selection keyboard.
-
-    Works whether called from a MessageHandler (update.message) or a
-    CallbackQueryHandler (update.callback_query).
-
-    Returns SELECT_GROUP or ConversationHandler.END.
-    """
-    groups = await get_all_groups()   # [{group_id, title}, …] from db.groups
+    """Render the group-selection keyboard filtered by user's admin status."""
+    user_id = update.effective_user.id
+    groups  = await _get_accessible_groups(context, user_id)
 
     if not groups:
         text = (
-            f"❌ *{sc('No groups found')}*\n\n"
-            f"{sc('Add me to a group and interact there first, then try /post again.')}"
+            f"❌ *{sc('No accessible groups found')}*\n\n"
+            f"{sc('You need to be an admin in at least one group that has this bot.')}\n"
+            f"{sc('Add the bot to your group as admin, then try /post again.')}"
         )
         if update.callback_query:
             await update.callback_query.edit_message_text(text, parse_mode="Markdown")
@@ -129,18 +151,34 @@ async def _show_group_select(
 # ── Step 1: Entry (/post) ──────────────────────────────────────────────────────
 
 async def post_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point — private chat, owner-only."""
-    if update.effective_chat.type != "private":
-        await update.message.reply_text(
-            sc("Use /post in PM (private chat with the bot).")
-        )
-        return ConversationHandler.END
+    """
+    Entry point — available in PM or group.
+    Allowed: bot owners + group admins.
+    Rejected: regular users.
+    """
+    user_id = update.effective_user.id
 
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text(
-            sc("This command is for bot owners only.")
-        )
-        return ConversationHandler.END
+    # Check access: owner or admin of at least one group
+    if not is_owner(user_id):
+        # Quick pre-check before starting the wizard
+        groups = await get_all_groups()
+        has_access = False
+        for g in groups:
+            try:
+                member = await context.bot.get_chat_member(g["group_id"], user_id)
+                if member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+                    has_access = True
+                    break
+            except Exception:
+                pass
+        if not has_access:
+            await update.message.reply_text(
+                f"⛔ *{sc('Access Denied')}*\n\n"
+                f"{sc('Only bot owners and group admins can create posts.')}\n"
+                f"{sc('You must be an admin in at least one group that has this bot.')}",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
 
     context.user_data.clear()
     await update.message.reply_text(
@@ -240,14 +278,13 @@ async def receive_btn1_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BUTTON_2_CHOICE
 
 
-# ── Step 4b: Button 2 — name ───────────────────────────────────────────────────
+# ── Step 4b: Button 2 ─────────────────────────────────────────────────────────
 
 async def btn2_choice_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "skip_btn2":
-        # Commit button 1 and proceed to group selection
         context.user_data["buttons"] = [
             {"label": context.user_data["btn1_name"],
              "url":   context.user_data["btn1_url"]}
@@ -298,6 +335,25 @@ async def select_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     group_id = int(query.data.split(":")[1])
+
+    # Re-verify admin access for non-owners (security check)
+    user_id = update.effective_user.id
+    if not is_owner(user_id):
+        try:
+            member = await context.bot.get_chat_member(group_id, user_id)
+            if member.status not in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
+                await query.edit_message_text(
+                    f"⛔ {sc('You are no longer an admin in that group.')}"
+                )
+                context.user_data.clear()
+                return ConversationHandler.END
+        except Exception:
+            await query.edit_message_text(
+                f"⛔ {sc('Could not verify your admin status. Please try again.')}"
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
     context.user_data["group_id"] = group_id
 
     try:
@@ -307,8 +363,8 @@ async def select_group_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_title = str(group_id)
     context.user_data["group_title"] = group_title
 
-    msg_text = context.user_data["message"]
-    buttons  = context.user_data.get("buttons", [])
+    msg_text  = context.user_data["message"]
+    buttons   = context.user_data.get("buttons", [])
     btn_lines = "".join(
         f"\n🔘 {sc('Button')} {i+1}: `{b['label']}` → `{b['url']}`"
         for i, b in enumerate(buttons)
@@ -347,7 +403,6 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_text    = context.user_data["message"]
     buttons     = context.user_data.get("buttons", [])
 
-    # Build post inline keyboard (each button on its own row)
     post_keyboard = None
     if buttons:
         post_keyboard = InlineKeyboardMarkup([
@@ -362,7 +417,6 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=post_keyboard,
             parse_mode="Markdown",
         )
-        # ── Persist to dedicated posts collection ──────────────────────────
         try:
             db = get_db()
             await db.posts.insert_one({
@@ -375,7 +429,7 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "sent_at":     datetime.now(timezone.utc),
             })
         except Exception:
-            pass  # MongoDB unavailable — post was sent, logging is best-effort
+            pass
         await query.edit_message_text(
             f"✅ *{sc('Post Sent!')}*\n📍 {sc('Group')}: {group_title}",
             parse_mode="Markdown",
@@ -403,7 +457,6 @@ async def cancel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _timeout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fires when the user has been idle for TIMEOUT seconds."""
     context.user_data.clear()
     try:
         if update and update.effective_chat:
@@ -427,7 +480,6 @@ def register(app: Application):
             ],
             CONFIRM_MESSAGE: [
                 CallbackQueryHandler(confirm_cb, pattern=r"^post_(confirm|cancel)$"),
-                # Catch stray text so the conversation doesn't hang silently
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _nudge),
             ],
             BUTTON_CHOICE: [
@@ -472,7 +524,7 @@ def register(app: Application):
         fallbacks=[CommandHandler("cancel", cancel_post)],
         conversation_timeout=TIMEOUT,
         per_user=True,
-        per_chat=False,   # track conversation per-user even across chat contexts
+        per_chat=False,
         allow_reentry=True,
     )
     app.add_handler(conv)

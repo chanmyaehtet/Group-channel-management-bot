@@ -14,7 +14,7 @@ from telegram.ext import (
     ChatMemberHandler, CommandHandler, ContextTypes,
 )
 
-from bot.utils import sc, is_admin, is_owner, check_cooldown, log_action
+from bot.utils import sc, md_escape, is_admin, is_owner, check_cooldown, log_action
 from database.models import get_group, update_group_setting, upsert_group
 
 
@@ -41,6 +41,7 @@ _MENU: dict[str, str] = {
         f"`/unwarn` — {sc('Remove last warning')}\n"
         f"`/warnings` — {sc('View all warnings')}\n"
         f"`/setwarnlimit <n>` — {sc('Set auto-ban limit (default: 3)')}\n\n"
+        f"_{sc('PM usage: /warnings <user_id> <group_id>')}_\n"
         f"_{sc('When a user reaches the warn limit they are automatically banned.')}_"
     ),
     "group": (
@@ -72,9 +73,10 @@ _MENU: dict[str, str] = {
     "id": (
         f"👤 *{sc('ID & Info')}*\n\n"
         f"`/id` — {sc('Your own Telegram ID + group ID')}\n"
-        f"`/id @username` — {sc('Look up any username')}\n"
+        f"`/id @username` — {sc('Look up any username (works in PM too)')}\n"
         f"`/id` _(reply)_ — {sc('ID of replied-to user')}\n"
-        f"`/info` — {sc('Full profile info & warnings')}"
+        f"`/info` — {sc('Full profile info & warnings (works in PM too)')}\n"
+        f"`/warnings <user_id> <group_id>` — {sc('Check warnings from PM')}"
     ),
     "owner": (
         f"👑 *{sc('Owner Panel')}*\n\n"
@@ -89,7 +91,7 @@ _MENU: dict[str, str] = {
         f"`/broadcast all <text>` — {sc('Broadcast to all users & groups')}\n"
         f"`/broadcast group <id> <text>` — {sc('Send to one group')}\n"
         f"`/broadcast user <id> <text>` — {sc('Send to one user')}\n"
-        f"`/post` — {sc('Create & send an announcement with buttons')}"
+        f"`/post` — {sc('Create & send an announcement (admins & owners)')}"
     ),
 }
 
@@ -116,15 +118,9 @@ def _main_keyboard(owner: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _md_safe(text: str) -> str:
-    """Escape Markdown v1 special chars in user-supplied strings."""
-    for ch in ("*", "_", "`", "["):
-        text = text.replace(ch, f"\\{ch}")
-    return text
-
-
 def _welcome_text(first_name: str) -> str:
-    name = _md_safe(first_name)
+    # BUG FIX: escape Markdown special chars from user-supplied name
+    name = md_escape(first_name)
     return (
         f"👋 *{sc('Hello')}, {name}!*\n\n"
         f"{sc('I am your Group Management Bot.')}\n"
@@ -139,7 +135,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type != "private":
         await update.message.reply_text(
-            f"👋 {sc('Hi')} {user.first_name}! "
+            f"👋 {sc('Hi')} {md_escape(user.first_name)}! "
             f"{sc('DM me to see all available commands.')}",
         )
         return
@@ -193,7 +189,22 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             sc("Please wait before using this command again.")
         )
-    group = await get_group(update.effective_chat.id)
+    # Allow /rules in PM if the user provides a group_id: /rules <group_id>
+    if update.effective_chat.type == "private":
+        if not context.args:
+            return await update.message.reply_text(
+                f"*{sc('PM Usage')}:* `/rules <group_id>`\n"
+                f"_{sc('Or use this command inside the group directly.')}_",
+                parse_mode="Markdown"
+            )
+        try:
+            cid = int(context.args[0])
+        except ValueError:
+            return await update.message.reply_text(sc("Provide a numeric group_id."))
+    else:
+        cid = update.effective_chat.id
+
+    group = await get_group(cid)
     rules_text = group.get("settings", {}).get("rules", "")
     if not rules_text:
         return await update.message.reply_text(sc("No rules set for this group."))
@@ -207,6 +218,10 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cid = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(
+            sc("Use this command inside the group.")
+        )
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
         return await update.message.reply_text(
             sc("You need to be an admin to use this command.")
@@ -228,6 +243,8 @@ async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cid = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use this command inside the group."))
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
         return await update.message.reply_text(
             sc("You need to be an admin to use this command.")
@@ -254,6 +271,8 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     cid = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use this command inside the group."))
     if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
         return await update.message.reply_text(
             sc("You need to be an admin to use this command.")
@@ -307,11 +326,11 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
         and new_status in (ChatMember.LEFT, ChatMember.BANNED)
     )
 
-    # Keep group title up-to-date
+    # Always keep group title up-to-date
     if result.chat.title:
         await upsert_group(result.chat.id, result.chat.title)
 
-    group = await get_group(result.chat.id)
+    group    = await get_group(result.chat.id)
     settings = group.get("settings", {})
 
     def fmt(template: str, user) -> str:
@@ -324,7 +343,7 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
                 group=result.chat.title or "",
             )
         except (KeyError, IndexError):
-            return template  # unknown placeholder — return as-is
+            return template
 
     try:
         if joined:
@@ -336,7 +355,7 @@ async def handle_member_update(update: Update, context: ContextTypes.DEFAULT_TYP
             await context.bot.send_message(result.chat.id, fmt(template, user))
             await log_action(context.bot, result.chat.id, user.id, 0, "joined the group")
         elif left:
-            user = result.old_chat_member.user
+            user   = result.old_chat_member.user
             action = "was banned" if new_status == ChatMember.BANNED else "left the group"
             template = settings.get(
                 "goodbye_message",
@@ -356,7 +375,6 @@ def register(app: Application):
     app.add_handler(CommandHandler("setrules",   setrules))
     app.add_handler(CommandHandler("setwelcome", setwelcome))
     app.add_handler(CommandHandler("setgoodbye", setgoodbye))
-    # Inline menu callbacks
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(
         ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)

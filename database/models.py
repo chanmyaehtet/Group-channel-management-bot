@@ -16,18 +16,31 @@ async def get_group(group_id: int) -> dict:
 
 async def upsert_group(group_id: int, title: str = None) -> None:
     db = get_db()
-    update = {"$set": {"last_activity": _now()},
-               "$setOnInsert": {"group_id": group_id, "title": title,
-                                "added_at": _now(), "settings": _default_settings()}}
+    set_fields = {"last_activity": _now()}
+    # BUG FIX: always update title when provided (not just on first insert).
+    # Previously title only updated via $setOnInsert which only fires on new docs,
+    # causing existing groups to permanently show "UNKNOWN" after rename.
     if title:
-        update["$set"]["title"] = title
-    await db.groups.update_one({"group_id": group_id}, update, upsert=True)
+        set_fields["title"] = title
+    await db.groups.update_one(
+        {"group_id": group_id},
+        {
+            "$set": set_fields,
+            "$setOnInsert": {
+                "group_id": group_id,
+                "title": title or str(group_id),
+                "added_at": _now(),
+                "settings": _default_settings(),
+            },
+        },
+        upsert=True,
+    )
 
 async def update_group_setting(group_id: int, key: str, value) -> None:
     """Update a single settings field. On first-ever insert, seeds all defaults."""
     db = get_db()
     defaults = _default_settings()
-    defaults[key] = value          # override the one we're changing
+    defaults[key] = value
     set_on_insert = {"group_id": group_id, "added_at": _now(), "settings": defaults}
     await db.groups.update_one(
         {"group_id": group_id},
@@ -62,12 +75,9 @@ async def upsert_user(user_id: int, username: str = None,
     if last_name is not None:  set_fields["last_name"]   = last_name
     if pm_active is not None:  set_fields["pm_active"]   = pm_active
 
-    # FIX: pm_active must NOT appear in both $set and $setOnInsert at the same time.
-    # $setOnInsert only provides the default (False) when the document is being
-    # created for the first time AND pm_active is not already being set via $set.
     set_on_insert: dict = {"user_id": user_id, "first_seen": _now()}
     if pm_active is None:
-        set_on_insert["pm_active"] = False  # default only on new-document insert
+        set_on_insert["pm_active"] = False
 
     await db.users.update_one(
         {"user_id": user_id},
@@ -164,11 +174,8 @@ async def track_message(group_id: int, user_id: int, text: str) -> int:
     now = _now()
     window_start = now - timedelta(seconds=10)
     key     = f"{group_id}:{user_id}:{hash(text)}"
-    expires = now + timedelta(seconds=60)   # TTL — MongoDB cleans up within ~60 s
+    expires = now + timedelta(seconds=60)
 
-    # Only match documents that fall within the current 10-second window.
-    # If the existing doc is older than 10 s, the filter misses it and
-    # upsert creates a fresh one (count=1) — correct sliding-window behaviour.
     await db.flood_track.update_one(
         {"key": key, "created_at": {"$gte": window_start}},
         {

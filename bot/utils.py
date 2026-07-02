@@ -11,6 +11,15 @@ SC = str.maketrans(
 )
 def sc(text: str) -> str: return text.translate(SC)
 
+def md_escape(text: str) -> str:
+    """Escape Markdown v1 special characters in user-supplied strings.
+    Prevents parse_entities errors when names contain *, _, `, [ characters."""
+    if not text:
+        return ""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
 def is_owner(user_id: int) -> bool: return user_id in OWNER_IDS
 
 async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
@@ -43,7 +52,6 @@ async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: return int(raw), None
         except ValueError:
             try:
-                # Telegram API requires @ prefix for username lookups
                 lookup = raw if raw.startswith("@") else f"@{raw}"
                 u = await context.bot.get_chat(lookup)
                 return u.id, u
@@ -60,7 +68,6 @@ async def get_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try: return int(raw)
         except ValueError:
             try:
-                # Telegram API requires @ prefix for username lookups
                 lookup = raw if raw.startswith("@") else f"@{raw}"
                 u = await context.bot.get_chat(lookup)
                 return u.id
