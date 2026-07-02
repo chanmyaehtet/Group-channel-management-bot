@@ -12,6 +12,7 @@ from telegram.request import HTTPXRequest
 import uvicorn
 
 from database.connection import connect_db, disconnect_db
+from bot.autodelete import TrackingBot, AutoDeleteApplication
 from bot.handlers import (
     moderation, system, broadcast, post,
     controls, antispam, owner, scheduler_handler, cleaner,
@@ -76,6 +77,8 @@ async def lifespan(app: FastAPI):
     ptb_app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .application_class(AutoDeleteApplication)
+        .bot_class(TrackingBot)
         .request(build_request())
         .get_updates_request(build_request())
         .build()
