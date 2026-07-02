@@ -363,16 +363,19 @@ async def final_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         # ── Persist to dedicated posts collection ──────────────────────────
-        db = get_db()
-        await db.posts.insert_one({
-            "admin_id":    update.effective_user.id,
-            "group_id":    group_id,
-            "group_title": group_title,
-            "message_id":  sent.message_id,
-            "text":        msg_text,
-            "buttons":     buttons,           # list of {label, url} dicts
-            "sent_at":     datetime.now(timezone.utc),
-        })
+        try:
+            db = get_db()
+            await db.posts.insert_one({
+                "admin_id":    update.effective_user.id,
+                "group_id":    group_id,
+                "group_title": group_title,
+                "message_id":  sent.message_id,
+                "text":        msg_text,
+                "buttons":     buttons,
+                "sent_at":     datetime.now(timezone.utc),
+            })
+        except Exception:
+            pass  # MongoDB unavailable — post was sent, logging is best-effort
         await query.edit_message_text(
             f"✅ *{sc('Post Sent!')}*\n📍 {sc('Group')}: {group_title}",
             parse_mode="Markdown",

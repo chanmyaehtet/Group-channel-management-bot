@@ -130,7 +130,9 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = await get_target_user_id(update, context)
     if not target:
         return await update.message.reply_text(sc("Reply to a message or provide a user ID."))
-    title = " ".join(context.args[1:]) if context.args and len(context.args) > 1 else ""
+    # If targeting by reply, title starts at args[0]; if by ID/username, at args[1]
+    _t_start = 0 if update.message.reply_to_message else 1
+    title = " ".join(context.args[_t_start:]) if context.args and len(context.args) > _t_start else ""
     try:
         await context.bot.promote_chat_member(
             cid, target,
@@ -234,6 +236,8 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"[{sc(a.user.first_name)}](tg://user?id={a.user.id})"
             for a in admins if not a.user.is_bot
         )
+        if not admin_mentions:
+            admin_mentions = sc("(no admins to mention)")
         reporter_link = f"[{sc(reporter.first_name)}](tg://user?id={reporter.id})"
         reported_name = reported_user.first_name if reported_user else "?"
         reported_link = f"[{sc(reported_name)}](tg://user?id={reported_user.id if reported_user else 0})"

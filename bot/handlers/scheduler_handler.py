@@ -1,8 +1,9 @@
 """Scheduling system — Yangon timezone (Asia/Yangon = UTC+6:30)."""
 import pytz
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, ContextTypes
 from bot.utils import sc, is_admin, is_owner
@@ -50,11 +51,12 @@ async def load_schedules_from_db(bot: Bot):
         h, m = int(time_parts[0]), int(time_parts[1])
         if s["type"] == "onetime":
             now = datetime.now(YANGON_TZ)
-            fire_time = YANGON_TZ.localize(datetime(now.year, now.month, now.day, h, m))
+            fire_time = YANGON_TZ.localize(
+                datetime.combine(now.date(), dt_time(h, m))
+            )
             if fire_time <= now:
-                continue  # already past
-            trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ,
-                                  end_date=datetime(2099, 12, 31, tzinfo=YANGON_TZ))
+                continue  # already past today — skip
+            trigger = DateTrigger(run_date=fire_time)
         else:
             trigger = CronTrigger(hour=h, minute=m, timezone=YANGON_TZ)
         scheduler.add_job(_fire_schedule, trigger=trigger, id=sid,
@@ -95,12 +97,19 @@ async def setschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not text:
         return await update.message.reply_text(sc("Please provide message text."))
 
+    if stype == "onetime":
+        now = datetime.now(YANGON_TZ)
+        fire_dt = YANGON_TZ.localize(datetime.combine(now.date(), dt_time(h, m)))
+        if fire_dt <= now:
+            return await update.message.reply_text(
+                f"❌ {sc('That time has already passed today. Set a future time.')}"
+            )
+
     sid = await add_schedule(cid, uid, stype, time_str, text)
     trigger = (
         CronTrigger(hour=h, minute=m, timezone=YANGON_TZ)
         if stype == "always"
-        else CronTrigger(hour=h, minute=m, timezone=YANGON_TZ,
-                         end_date=datetime(2099, 12, 31, tzinfo=YANGON_TZ))
+        else DateTrigger(run_date=fire_dt)
     )
     get_scheduler().add_job(_fire_schedule, trigger=trigger, id=sid,
                             kwargs={"group_id": cid, "text": text,

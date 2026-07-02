@@ -14,7 +14,7 @@ import uvicorn
 from database.connection import connect_db, disconnect_db
 from bot.handlers import (
     moderation, system, broadcast, post,
-    controls, antispam, owner, scheduler_handler,
+    controls, antispam, owner, scheduler_handler, cleaner,
 )
 
 load_dotenv()
@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     moderation.register(ptb_app)
     controls.register(ptb_app)
     antispam.register(ptb_app)
+    cleaner.register(ptb_app)
     owner.register(ptb_app)
     scheduler_handler.register(ptb_app)
     system.register(ptb_app)
@@ -96,6 +97,9 @@ async def lifespan(app: FastAPI):
 
     await ptb_app.initialize()
     await ptb_app.start()
+
+    # Load persisted schedules and start the APScheduler instance
+    await scheduler_handler.load_schedules_from_db(ptb_app.bot)
 
     me = await ptb_app.bot.get_me()
 

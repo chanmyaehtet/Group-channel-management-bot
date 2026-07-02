@@ -3,7 +3,7 @@ from telegram import Bot, ChatMember
 from telegram.ext import ContextTypes
 from telegram import Update
 
-OWNER_IDS = [int(x.strip()) for x in os.getenv("OWNER_IDS","0").split(",") if x.strip().isdigit()]
+OWNER_IDS = [int(x.strip()) for x in os.getenv("OWNER_IDS","").split(",") if x.strip().isdigit()]
 
 SC = str.maketrans(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",

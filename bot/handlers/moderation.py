@@ -84,8 +84,10 @@ async def mute(update: Update, ctx):
     if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
     cid = update.effective_chat.id
     duration = None
-    if ctx.args and len(ctx.args) > 1:
-        try: duration = int(ctx.args[1])
+    # If targeting by reply, duration is ctx.args[0]; if by ID/username, it's ctx.args[1]
+    _dur_idx = 0 if update.message.reply_to_message else 1
+    if ctx.args and len(ctx.args) > _dur_idx:
+        try: duration = int(ctx.args[_dur_idx])
         except: pass
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
@@ -122,7 +124,9 @@ async def warn(update: Update, ctx):
     tid, _ = await resolve_target(update, ctx)
     if not tid: return await update.message.reply_text(sc("Reply or provide user ID."))
     cid = update.effective_chat.id
-    reason = " ".join(ctx.args[1:]) if ctx.args and len(ctx.args) > 1 else None
+    # If targeting by reply, reason starts at args[0]; if by ID/username, at args[1]
+    _r_start = 0 if update.message.reply_to_message else 1
+    reason = " ".join(ctx.args[_r_start:]) if ctx.args and len(ctx.args) > _r_start else None
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
         if m.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):

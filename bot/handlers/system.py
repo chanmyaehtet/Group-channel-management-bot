@@ -157,7 +157,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user  = query.from_user
-    key   = query.data.split(":")[1]
+    parts = query.data.split(":", 1)
+    if len(parts) < 2:
+        return
+    key   = parts[1]
     owner = is_owner(user.id)
 
     if key == "back":

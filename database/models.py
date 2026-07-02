@@ -148,15 +148,25 @@ async def add_log(group_id: int, user_id: int, admin_id: int,
 
 # ─── FLOOD TRACKING (anti-spam) ───────────────────────────
 async def track_message(group_id: int, user_id: int, text: str) -> int:
-    """Returns count of identical messages in last 10s."""
+    """Returns count of identical messages in the last 10 seconds."""
     from datetime import timedelta
-    db = get_db()
+    db  = get_db()
     now = _now()
-    window = now - timedelta(seconds=10)
-    key = f"{group_id}:{user_id}:{hash(text)}"
-    expires = now + timedelta(seconds=60)
-    await db.flood_track.update_one({"key": key},
-        {"$inc": {"count": 1}, "$set": {"expires_at": expires},
-         "$setOnInsert": {"key": key, "created_at": now}}, upsert=True)
-    doc = await db.flood_track.find_one({"key": key})
+    window_start = now - timedelta(seconds=10)
+    key     = f"{group_id}:{user_id}:{hash(text)}"
+    expires = now + timedelta(seconds=60)   # TTL — MongoDB cleans up within ~60 s
+
+    # Only match documents that fall within the current 10-second window.
+    # If the existing doc is older than 10 s, the filter misses it and
+    # upsert creates a fresh one (count=1) — correct sliding-window behaviour.
+    await db.flood_track.update_one(
+        {"key": key, "created_at": {"$gte": window_start}},
+        {
+            "$inc": {"count": 1},
+            "$set": {"expires_at": expires},
+            "$setOnInsert": {"key": key, "created_at": now},
+        },
+        upsert=True,
+    )
+    doc = await db.flood_track.find_one({"key": key, "created_at": {"$gte": window_start}})
     return doc.get("count", 1) if doc else 1
