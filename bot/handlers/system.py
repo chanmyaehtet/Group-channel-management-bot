@@ -55,7 +55,9 @@ _MENU: dict[str, str] = {
         f"`/setrules <text>` — {sc('Set group rules')}\n"
         f"`/rules` — {sc('Show group rules')}\n"
         f"`/setwelcome <text>` — {sc('Custom welcome message')}\n"
-        f"`/setgoodbye <text>` — {sc('Custom goodbye message')}\n\n"
+        f"`/setgoodbye <text>` — {sc('Custom goodbye message')}\n"
+        f"`/autowelcome on|off` — {sc('Enable / disable welcome message')}\n"
+        f"`/autogoodbye on|off` — {sc('Enable / disable goodbye message')}\n\n"
         f"{sc('Placeholders: {{user}} {{first_name}} {{last_name}} {{username}} {{group}}')}"
     ),
     "settings": (
@@ -295,6 +297,64 @@ async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(sc("Goodbye message set successfully."))
 
 
+# ── /autowelcome ───────────────────────────────────────────────────────────────
+
+async def autowelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use this command inside the group."))
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(
+            sc("You need to be an admin to use this command.")
+        )
+    if not check_cooldown(uid, "autowelcome"):
+        return await update.message.reply_text(
+            sc("Please wait before using this command again.")
+        )
+    if not context.args or context.args[0].lower() not in ("on", "off"):
+        return await update.message.reply_text(
+            f"{sc('Usage')}: `/autowelcome on` | `/autowelcome off`",
+            parse_mode="Markdown",
+        )
+    val = context.args[0].lower() == "on"
+    await update_group_setting(cid, "auto_welcome", val)
+    await log_action(context.bot, cid, uid, uid, f"autowelcome {'on' if val else 'off'}")
+    state = sc("enabled") if val else sc("disabled")
+    await update.message.reply_text(
+        f"{'✅' if val else '❌'} {sc('Welcome message')} {state}."
+    )
+
+
+# ── /autogoodbye ───────────────────────────────────────────────────────────────
+
+async def autogoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    if update.effective_chat.type == "private":
+        return await update.message.reply_text(sc("Use this command inside the group."))
+    if not await is_admin(context.bot, cid, uid) and not is_owner(uid):
+        return await update.message.reply_text(
+            sc("You need to be an admin to use this command.")
+        )
+    if not check_cooldown(uid, "autogoodbye"):
+        return await update.message.reply_text(
+            sc("Please wait before using this command again.")
+        )
+    if not context.args or context.args[0].lower() not in ("on", "off"):
+        return await update.message.reply_text(
+            f"{sc('Usage')}: `/autogoodbye on` | `/autogoodbye off`",
+            parse_mode="Markdown",
+        )
+    val = context.args[0].lower() == "on"
+    await update_group_setting(cid, "auto_goodbye", val)
+    await log_action(context.bot, cid, uid, uid, f"autogoodbye {'on' if val else 'off'}")
+    state = sc("enabled") if val else sc("disabled")
+    await update.message.reply_text(
+        f"{'✅' if val else '❌'} {sc('Goodbye message')} {state}."
+    )
+
+
 # ── Bot join / leave tracking ──────────────────────────────────────────────────
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,8 +438,10 @@ def register(app: Application):
     app.add_handler(CommandHandler("start",      start))
     app.add_handler(CommandHandler("rules",      rules))
     app.add_handler(CommandHandler("setrules",   setrules))
-    app.add_handler(CommandHandler("setwelcome", setwelcome))
-    app.add_handler(CommandHandler("setgoodbye", setgoodbye))
+    app.add_handler(CommandHandler("setwelcome",  setwelcome))
+    app.add_handler(CommandHandler("setgoodbye",  setgoodbye))
+    app.add_handler(CommandHandler("autowelcome", autowelcome))
+    app.add_handler(CommandHandler("autogoodbye", autogoodbye))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(
         ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
