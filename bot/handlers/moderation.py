@@ -47,15 +47,20 @@ async def _require_bot_admin(update, ctx):
 
 # ── /kick ──────────────────────────────────────────────────────────────────────
 
+def _no_target_msg(ctx, update) -> str:
+    """Return the right error when resolve_target() gives None."""
+    if ctx.args and not update.message.reply_to_message:
+        return sc("User not found. Try a numeric user ID instead of @username.")
+    return sc("Reply to a message or provide a user ID / @username.")
+
+
 @_group_guard
 async def kick(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(
-            sc("Reply to a message or provide a user ID / @username.")
-        )
+        return await update.message.reply_text(_no_target_msg(ctx, update))
     cid = update.effective_chat.id
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
@@ -79,9 +84,7 @@ async def ban(update: Update, ctx):
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(
-            sc("Reply to a message or provide a user ID / @username.")
-        )
+        return await update.message.reply_text(_no_target_msg(ctx, update))
     cid = update.effective_chat.id
     try:
         m = await ctx.bot.get_chat_member(cid, tid)
@@ -106,7 +109,7 @@ async def unban(update: Update, ctx):
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
+        return await update.message.reply_text(_no_target_msg(ctx, update))
     try:
         await ctx.bot.unban_chat_member(update.effective_chat.id, tid, only_if_banned=True)
         await add_log(update.effective_chat.id, tid, update.effective_user.id, "unban")
@@ -123,7 +126,7 @@ async def mute(update: Update, ctx):
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
+        return await update.message.reply_text(_no_target_msg(ctx, update))
     cid = update.effective_chat.id
     # Duration arg index depends on whether target was reply (arg[0]) or explicit (arg[1])
     _dur_idx = 0 if update.message.reply_to_message else 1
@@ -156,7 +159,7 @@ async def unmute(update: Update, ctx):
     if not await _require_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
+        return await update.message.reply_text(_no_target_msg(ctx, update))
     try:
         await ctx.bot.restrict_chat_member(
             update.effective_chat.id, tid,
@@ -188,7 +191,14 @@ async def warn(update: Update, ctx):
     if not await _require_bot_admin(update, ctx): return
     tid, _ = await resolve_target(update, ctx)
     if not tid:
-        return await update.message.reply_text(sc("Reply or provide user ID / @username."))
+        # If args were given (e.g. @username / user_id) but lookup failed, give a clear reason.
+        if ctx.args and not update.message.reply_to_message:
+            return await update.message.reply_text(
+                sc("User not found. Try a numeric user ID instead of @username.")
+            )
+        return await update.message.reply_text(
+            sc("Reply to a message or provide a user ID / @username.")
+        )
     cid = update.effective_chat.id
     _r_start = 0 if update.message.reply_to_message else 1
     reason = " ".join(ctx.args[_r_start:]) if ctx.args and len(ctx.args) > _r_start else None

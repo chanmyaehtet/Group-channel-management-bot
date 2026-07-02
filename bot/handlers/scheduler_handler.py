@@ -137,14 +137,25 @@ async def listschedules(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     group_schedules = [s for s in all_schedules if s["group_id"] == cid]
     if not group_schedules:
         return await update.message.reply_text(sc("No active schedules for this group."))
-    lines = [f"⏰ *{sc('Active Schedules')}* ({len(group_schedules)})\n━━━━━━━━━━━━"]
+    lines = [f"⏰ {sc('Active Schedules')} ({len(group_schedules)})\n━━━━━━━━━━━━"]
     for s in group_schedules:
         sid_short = str(s["_id"])[:8]
-        stype     = sc(s["type"])
-        preview   = s["text"][:40] + ("…" if len(s["text"]) > 40 else "")
-        lines.append(f"• `{sid_short}` — *{s['time']}* ({stype})\n  _{preview}_")
-    lines.append(f"\n_{sc('Use /delschedule <id_prefix> to remove')}_")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        stype     = s["type"].upper()
+        # Truncate and show preview — escape special chars so Markdown doesn't break
+        raw_preview = s["text"][:40] + ("…" if len(s["text"]) > 40 else "")
+        # Strip characters that break Markdown v1 inside _italic_ spans
+        safe_preview = raw_preview.replace("_", "-").replace("*", "").replace("`", "")
+        lines.append(
+            f"• ID: {sid_short}\n"
+            f"  Time: {s['time']} | Type: {stype}\n"
+            f"  Msg: {safe_preview}"
+        )
+    lines.append(f"\nUse: /delschedule <id> (first 8 chars of ID)")
+    try:
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        print(f"listschedules reply error: {e}")
+        await update.message.reply_text(sc("Error displaying schedules. Please try again."))
 
 
 async def delschedule(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

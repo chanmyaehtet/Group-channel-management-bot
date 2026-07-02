@@ -15,6 +15,9 @@ How it works:
      as an asyncio task — it sleeps AUTO_DELETE_DELAY seconds then deletes
      every collected message (command + all bot replies).
 
+     Commands in _KEEP_CMDS are NEVER auto-deleted because users need to
+     read/copy from their output (e.g. schedule IDs, rules text, warnings list).
+
 Why ContextVar?
   asyncio.ContextVar is per-Task. Because PTB processes each update inside
   a single coroutine chain (no new tasks between process_update() and the
@@ -33,8 +36,22 @@ _pending: ContextVar[Optional[Tuple[int, List[Message]]]] = ContextVar(
     "_auto_delete_pending", default=None
 )
 
-# 2 minutes
-AUTO_DELETE_DELAY = 120
+# 5 minutes — gives users enough time to read bot replies before they disappear.
+AUTO_DELETE_DELAY = 300
+
+# These commands produce output the user must READ AND ACT ON (IDs, lists, etc.)
+# Their messages are never auto-deleted so the user can always refer back.
+_KEEP_CMDS = frozenset({
+    "listschedules",
+    "rules",
+    "warnings",
+    "id",
+    "info",
+    "listgroups",
+    "listusers",
+    "status",
+    "start",
+})
 
 
 class TrackingBot(Bot):
@@ -79,6 +96,14 @@ class AutoDeleteApplication(Application):
         )
 
         if not is_group_command:
+            await super().process_update(update)
+            return
+
+        # Extract bare command name (strip leading /, bot mention, and args)
+        raw_cmd = msg.text.split()[0].lstrip("/").split("@")[0].lower()
+
+        # For "keep" commands, process normally without any auto-delete
+        if raw_cmd in _KEEP_CMDS:
             await super().process_update(update)
             return
 
